@@ -1,34 +1,26 @@
-#![feature(universal_impl_trait)]
-#![feature(conservative_impl_trait)]
-
 /**
  * db的定义
  * 会话负责用户、权限管理
  */
 
+
 use std::result::Result;
+use std::sync::Arc;
 use std::vec::Vec;
+use std::u128;
 
-/// 系统表的前缀
-const PRIFIX = "_$";
+// 系统表的前缀
+const PRIFIX:&'static str = "_$";
 
-/// 
+//
 pub trait AsyncDB<T: AsyncTxn> {
     fn transaction(&mut self, id: u128, writable: bool, timeout:usize) -> T;
 }
 pub trait SyncDB<T: SyncTxn> {
     fn transaction(&mut self, id: u128, writable: bool, timeout:usize) -> T;
 }
-pub enum DBError {
-	None,
-	Timeout,
-	InvalidArgs,
-	InvalidState,
-	InvalidTab,
-	ReadonlyTab,
-	WriteonlyTab,
-}
 
+#[derive(Clone)]
 pub enum TxState {
 	Ok,
 	Doing,
@@ -40,12 +32,12 @@ pub enum TxState {
 	Rollbacked,
 }
 
-pub type DBResult<T> = Result<T, DBError>;
-pub type DBResultDefault = Result<(), DBError>;
+pub type DBResult<T> = Result<T, String>;
+pub type DBResultDefault = Result<(), String>;
 
 pub type TxCallback = FnMut(DBResultDefault);
 pub type TxQueryCallback = FnMut(DBResult<Vec<TabKeyValue>>);
-pub type TxIterCallback = FnMut(DBResult<Cursor>);
+pub type TxIterCallback = FnMut(DBResult<Box<Cursor>>);
 
 
 /**
@@ -76,25 +68,25 @@ pub trait AsyncTxn {
 	// 获得事务的状态
 	fn get_state(&self) -> TxState;
 	// 预提交一个事务
-	fn prepare(&mut self, TxCallback);
+	fn prepare(&mut self, Box<TxCallback>);
 	// 提交一个事务
-	fn commit(&mut self, TxCallback);
+	fn commit(&mut self, Box<TxCallback>);
 	// 回滚一个事务
-	fn rollback(&mut self, TxCallback);
+	fn rollback(&mut self, Box<TxCallback>);
 	// 锁
-	fn lock(&mut self, arr:Vec<TabKey>, lock_time:usize, TxCallback);
+	fn lock(&mut self, arr:Vec<TabKey>, lock_time:usize, Box<TxCallback>);
 	// 查询
-	fn query(&mut self, arr:Vec<TabKey>, lock_time:Option<usize>, TxQueryCallback);
+	fn query(&mut self, arr:Vec<TabKey>, lock_time:Option<usize>, Box<TxQueryCallback>);
 	// 插入或更新
-	fn upsert(&mut self, arr:Vec<TabKey>, lock_time:Option<usize>, TxCallback);
+	fn upsert(&mut self, arr:Vec<TabKey>, lock_time:Option<usize>, Box<TxCallback>);
 	// 删除
-	fn delete(&mut self, arr:Vec<TabKey>, lock_time:Option<usize>, TxCallback);
+	fn delete(&mut self, arr:Vec<TabKey>, lock_time:Option<usize>, Box<TxCallback>);
 	// 迭代
-	fn iter(&mut self, tab_key:TabKey, descending: bool, key_only:bool, filter:String, TxIterCallback);
+	fn iter(&mut self, tab_key:TabKey, descending: bool, key_only:bool, filter:String, Box<TxIterCallback>);
 	// 索引迭代
-	fn index(&mut self, tab_key:TabKey, descending: bool, key_only:bool, filter:String, TxIterCallback);
+	fn index(&mut self, tab_key:TabKey, descending: bool, key_only:bool, filter:String, Box<TxIterCallback>);
 	// 新增 修改 删除 表
-	fn alter(&mut self, tab:String, metaJson:String, TxCallback);
+	fn alter(&mut self, tab:String, metaJson:String, Box<TxCallback>);
 
 }
 pub trait SyncTxn {
@@ -115,9 +107,9 @@ pub trait SyncTxn {
 	// 删除
 	fn delete(&mut self, arr:Vec<TabKey>, lock_time:Option<usize>) -> DBResultDefault;
 	// 迭代表
-	fn iterTab(&mut self, tab_key:TabKey, descending: bool, key_only:bool, filter:String) -> DBResult<Cursor>;
+	fn iter(&mut self, tab_key:TabKey, descending: bool, key_only:bool, filter:String) -> DBResult<Box<Cursor>>;
 	// 迭代索引
-	fn iterIndex(&mut self, tab_key:TabKey, descending: bool, key_only:bool, filter:String) -> DBResult<Cursor>;
+	fn index(&mut self, tab_key:TabKey, descending: bool, key_only:bool, filter:String) -> DBResult<Box<Cursor>>;
 	// 新增 修改 删除 表
 	fn alter(&mut self, tab:String, metaJson:String) -> DBResultDefault;
 
