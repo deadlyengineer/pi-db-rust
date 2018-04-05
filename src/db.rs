@@ -10,7 +10,36 @@ use std::vec::Vec;
 use std::u128;
 
 // 系统表的前缀
-const PRIFIX:&'static str = "_$";
+const PRIFIX:&str = "_$";
+
+pub trait Txn {
+	fn is_writable(&self) -> bool;
+	// 获得事务的超时时间
+	fn get_timeout(&self) -> usize;
+	// 获得事务的状态
+	fn get_state(&self) -> TxState;
+	// 预提交一个事务
+	fn prepare(&mut self, mut cb: TxCallback);
+	// 提交一个事务
+	fn commit(&mut self, mut cb: TxCallback);
+	// 回滚一个事务
+	fn rollback(&mut self, mut cb: TxCallback);
+	// 锁
+	fn lock(&mut self, arr:Vec<TabKey>, lock_time:usize, mut cb: TxCallback);
+	// 查询
+	fn query(&mut self, arr:Vec<TabKey>, lock_time:Option<usize>, mut cb: TxQueryCallback);
+	// 插入或更新
+	fn upsert(&mut self, arr:Vec<TabKey>, lock_time:Option<usize>, mut cb: TxCallback);
+	// 删除
+	fn delete(&mut self, arr:Vec<TabKey>, lock_time:Option<usize>, mut cb: TxCallback);
+	// 迭代
+	fn iter(&mut self, tab_key:TabKey, descending: bool, key_only:bool, filter:String, mut cb: TxIterCallback);
+	// 索引迭代
+	fn index(&mut self, tab_key:TabKey, descending: bool, key_only:bool, filter:String, mut cb: TxIterCallback);
+	// 新增 修改 删除 表
+	fn alter(&mut self, tab:String, metaJson:String, mut cb: TxCallback);
+
+}
 
 //
 pub trait AsyncDB<T: AsyncTxn> {
@@ -22,10 +51,11 @@ pub trait SyncDB<T: SyncTxn> {
 
 #[derive(Clone)]
 pub enum TxState {
-	Ok,
+	Ok = 1,
 	Doing,
 	Preparing,
-	Prepared,
+	PreparOk,
+	PreparFail,
 	Committing,
 	Commited,
 	Rollbacking,
@@ -35,10 +65,10 @@ pub enum TxState {
 pub type DBResult<T> = Result<T, String>;
 pub type DBResultDefault = Result<(), String>;
 
-pub type TxCallback = FnMut(DBResultDefault);
-pub type TxQueryCallback = FnMut(DBResult<Vec<TabKeyValue>>);
-pub type TxIterCallback = FnMut(DBResult<Box<Cursor>>);
-
+pub type TxCallback = Box<FnMut(DBResultDefault)>;
+pub type ArcTxCallback = Arc<FnMut(DBResultDefault)>;
+pub type TxQueryCallback = Box<FnMut(DBResult<Vec<TabKeyValue>>)>;
+pub type TxIterCallback = Box<FnMut(DBResult<Box<Cursor>>)>;
 
 /**
  * 表键条目
@@ -68,25 +98,25 @@ pub trait AsyncTxn {
 	// 获得事务的状态
 	fn get_state(&self) -> TxState;
 	// 预提交一个事务
-	fn prepare(&mut self, Box<TxCallback>);
+	fn prepare(&mut self, ArcTxCallback) -> Option<DBResultDefault>;
 	// 提交一个事务
-	fn commit(&mut self, Box<TxCallback>);
+	fn commit(&mut self, ArcTxCallback) -> Option<DBResultDefault>;
 	// 回滚一个事务
-	fn rollback(&mut self, Box<TxCallback>);
+	fn rollback(&mut self, ArcTxCallback) -> Option<DBResultDefault>;
 	// 锁
-	fn lock(&mut self, arr:Vec<TabKey>, lock_time:usize, Box<TxCallback>);
+	fn lock(&mut self, arr:Vec<TabKey>, lock_time:usize, ArcTxCallback) -> Option<DBResultDefault>;
 	// 查询
-	fn query(&mut self, arr:Vec<TabKey>, lock_time:Option<usize>, Box<TxQueryCallback>);
+	fn query(&mut self, arr:Vec<TabKey>, lock_time:Option<usize>, TxQueryCallback) -> DBResult<Vec<TabKeyValue>>;
 	// 插入或更新
-	fn upsert(&mut self, arr:Vec<TabKey>, lock_time:Option<usize>, Box<TxCallback>);
+	fn upsert(&mut self, arr:Vec<TabKey>, lock_time:Option<usize>, ArcTxCallback) -> Option<DBResultDefault>;
 	// 删除
-	fn delete(&mut self, arr:Vec<TabKey>, lock_time:Option<usize>, Box<TxCallback>);
+	fn delete(&mut self, arr:Vec<TabKey>, lock_time:Option<usize>, ArcTxCallback) -> Option<DBResultDefault>;
 	// 迭代
-	fn iter(&mut self, tab_key:TabKey, descending: bool, key_only:bool, filter:String, Box<TxIterCallback>);
+	fn iter(&mut self, tab_key:TabKey, descending: bool, key_only:bool, filter:String, TxIterCallback) -> Option<DBResult<Box<Cursor>>>;
 	// 索引迭代
-	fn index(&mut self, tab_key:TabKey, descending: bool, key_only:bool, filter:String, Box<TxIterCallback>);
+	fn index(&mut self, tab_key:TabKey, descending: bool, key_only:bool, filter:String, TxIterCallback) -> Option<DBResult<Box<Cursor>>>;
 	// 新增 修改 删除 表
-	fn alter(&mut self, tab:String, metaJson:String, Box<TxCallback>);
+	fn alter(&mut self, tab:String, metaJson:String, TxCallback) -> Option<DBResultDefault>;
 
 }
 pub trait SyncTxn {

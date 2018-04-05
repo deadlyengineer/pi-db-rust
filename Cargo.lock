@@ -1,4 +1,11 @@
 [[package]]
 name = "pi_db"
 version = "0.1.0"
+dependencies = [
+ "pi_lib 0.1.0",
+]
+
+[[package]]
+name = "pi_lib"
+version = "0.1.0"
 
