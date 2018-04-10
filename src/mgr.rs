@@ -4,9 +4,7 @@
 /**
  * 基于2pc的db管理器，每个db实现需要将自己注册到管理器上
  */
-use std::sync::Arc;
-use std::sync::Weak;
-use std::sync::RwLock;
+use std::sync::{Arc, Weak, Mutex, RwLock};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::HashMap;
 
@@ -14,27 +12,30 @@ use pi_lib::ordmap::ImOrdMap;
 use pi_lib::asbtree::{TreeMap, new};
 
 
-use db::{Txn, AsyncDB, SyncDB, DBResult, DBResultDefault, TxState, TabKey, TabKeyValue, AsyncTxn, SyncTxn, TxCallback, TxQueryCallback, TxIterCallback};
+use db::{TxnInfo, Txn, DB, DBBuilder, DBResult, CBResult, TxState, TabKey, TabKeyValue, Cursor, TxCallback, TxQueryCallback, TxIterCallback};
 
 
 pub type TxHandler = Box<FnMut(&mut ArcTx)>;
 
 
 pub struct Mgr {
-	async: TreeMap<String, Box<AsyncDB<AsyncTxn>>>,
-	sync: TreeMap<String, Box<SyncDB<SyncTxn>>>,
+	// 构建器
+	builders: TreeMap<String, Box<DBBuilder>>,
+	//数据表
+	tabs: TreeMap<String, Box<DB>>,
 	// 定时轮
 	// 管理用的弱引用事务
-	map: TreeMap<u128, Weak<RwLock<Tx>>>,
+	map: TreeMap<u128, Weak<Tx>>,
 }
 
 
 impl Mgr {
-	// 注册数据库
-	fn register_async(&mut self, name: String, db: Box<AsyncDB<AsyncTxn>>) -> bool {
+	// 注册构建器
+	fn register_builder(&mut self, clazz: String, builder: Box<DBBuilder>) -> bool {
 		return false;
 	}
-	fn register_sync(&mut self, name: String, db: Box<AsyncDB<AsyncTxn>>) -> bool {
+	// 注册数据表
+	fn register_tab(&mut self, name: String, db: Box<DB>) -> bool {
 		return false;
 	}
 	// 取消注册数据库
@@ -50,17 +51,15 @@ impl Mgr {
 
 	}
 	fn transaction(&mut self, writable: bool, timeout:usize) -> ArcTx {
-		Arc::new(Tx{
+		Arc::new(Mutex::new(Tx{
 			writable: writable,
 			timeout: timeout,
-			async_db: self.async.clone(),
-			sync_db: self.sync.clone(),
+			builders: self.builders.clone(),
+			tabs: self.tabs.clone(),
 			start_time: 0,
-			state: RwLock::new(TxState::Ok),
+			state: TxState::Ok,
 			timer_ref: 0,
-			async: HashMap::new(),
-			sync: HashMap::new(),
-			lock: RwLock::new(1),
+			txns: HashMap::new(),
 		}))
 	}
 
@@ -69,161 +68,161 @@ impl Mgr {
 pub struct Tx {
 	writable: bool,
 	timeout: usize,
-	async_db: TreeMap<String, Box<AsyncDB<AsyncTxn>>>,
-	sync_db: TreeMap<String, Box<SyncDB<SyncTxn>>>,
+	builders: TreeMap<String, Box<DBBuilder>>,
+	tabs: TreeMap<String, Box<DB>>,
 	start_time: u64, // us
-	state: RwLock<TxState>,
+	state: TxState,
 	timer_ref: usize,
-	async: HashMap<String, Box<AsyncTxn>>,
-	sync: HashMap<String, Box<SyncTxn>>,
-	result: Option<DBResultDefault>,
-	lock: RwLock<usize>,
+	txns: HashMap<String, Box<Txn>>,
+	// result: CBResult,
 }
 
 impl Tx {
-	// 预提交异步事务
-	fn prepare(&mut self, tx: ArcTx, mut cb: TxCallback) => Option<DBResultDefault> {
-		self.state = TxState::Prepared;
-		let count = Arc::new(AtomicUsize::new(self.async.len()));
-		let f = move |r: DBResultDefault| {
+
+	// 预提交事务
+	fn prepare(&mut self, atx: ArcTx, cb: TxCallback) -> CBResult {
+		self.state = TxState::Preparing;
+		let count = Arc::new(AtomicUsize::new(self.txns.len()));
+		let c = count.clone();
+		let f = move |r: DBResult<()>| {
 			match r {
 				Ok(_) => {
-					if count.fetch_sub(1, Ordering::SeqCst) == 1 {
-						
-						cb(Ok(()))
+					if c.fetch_sub(1, Ordering::SeqCst) == 1 {
+						let mut t = atx.lock().unwrap();
+						match t.state {
+							TxState::Preparing => {
+								t.state = TxState::PreparOk;
+								let ptr = Arc::into_raw(cb.clone());
+								// ((*ptr) as FnMut(Result<(), String>))(r);
+								unsafe { Arc::from_raw(ptr) };
+							},
+							_ => ()
+						}
 					}
 				},
-				err => cb(err),
+				_ => {
+					let mut t = atx.lock().unwrap();
+					match t.state {
+						TxState::Preparing => {
+							t.state = TxState::PreparFail;
+							()// (*cb)(r),
+						},
+						_ => ()
+					}
+					
+				}
 			}
 		};
-		let mut bf = Arc::new(f);
-		for (_, val) in self.async.iter_mut() {
+		let bf = Arc::new(f);
+		for (_, val) in self.txns.iter_mut() {
 			match (*val).prepare(bf.clone()) {
-				Some(r) -> {
-					if count.fetch_sub(1, Ordering::SeqCst) == 1
+				Some(r) => match r {
+					Ok(_) => {
+						if count.fetch_sub(1, Ordering::SeqCst) == 1 {
+							self.state = TxState::PreparOk;
+							return Some(r)
+						}
+					},
+					_ => {
+						self.state = TxState::PreparFail;
 						return Some(r)
+					}
 				},
-				_ -> (),
+				_ => (),
 			}
 		}
 		return None
 	}
-	// 预提交同步事务
-	fn prepare_sync(&mut self) -> DBResultDefault {
-		for (_, val) in self.sync.iter_mut() {
-			match (*val).prepare() {
-				Ok(_) => continue,
-				err => return err,
-			}
-		}
-		return Ok(())
-	}
 	// 提交同步事务
-	fn commit_sync(&mut self) -> DBResultDefault {
-		let mut r = Ok(());
-		for (_, val) in self.sync.iter_mut() {
-			match (*val).commit() {
-				Ok(_) => continue,
-				err => r = err,
-			}
-		}
-		return r
+	fn commit(&mut self) -> CBResult {
+		// for (_, val) in self.txns.iter_mut() {
+		// 	match (*val).commit(bf.clone()) {
+		// 		Some(r) => {
+		// 			if count.fetch_sub(1, Ordering::SeqCst) == 1{
+		// 				return Some(r)
+		// 			}
+		// 		},
+		// 		_ => (),
+		// 	}
+		// }
+		return None
 	}
-	// 回滚事务
-	fn rollback_sync(&mut self) -> DBResultDefault {
-		let mut r = Ok(());
-		for (_, val) in self.sync.iter_mut() {
-			match (*val).rollback() {
-				Ok(_) => continue,
-				err => r = err,
-			}
-		}
-		return r
-	}
+
 }
 
-pub type ArcTx = Arc<Tx>;
+pub type ArcTx = Arc<Mutex<Tx>>;
 
-impl Txn for ArcTx {
+impl TxnInfo for ArcTx {
 
 	// 判断事务是否可写
 	fn is_writable(&self) -> bool {
-		self.writable
+		self.lock().unwrap().writable
 	}
 	// 获得事务的超时时间
 	fn get_timeout(&self) -> usize {
-		self.timeout
+		(*self).lock().unwrap().timeout
 	}
+}
+impl Txn for ArcTx {
+
 	// 获得事务的状态
 	fn get_state(&self) -> TxState {
-		self.state.read().unwrap().clone()
+		(*self).lock().unwrap().state.clone()
 	}
 	// 预提交一个事务
-	fn prepare(&mut self, mut cb: TxCallback) {
-		let mut r = Ok(());
-		{
-			let mut t = self.state.write().unwrap();
-			match t {
-				TxState::Ok => *t = TxState::Preparing,
-				_ => r = Err(String::from("InvalidState")),
-			}
-		}
-		if is_err(r)
-			(*cb)(r)
-		match Tx.prepare_sync(self) {
-			Ok(_) => r = t.prepare_async(self.clone(), cb),
-			err => (*cb)(err),
-		},
-	}
-	// 提交一个事务
-	fn commit(&mut self, mut cb: TxCallback) {
-		let mut t = self.write().unwrap();
+	fn prepare(&mut self, cb: TxCallback) -> CBResult {
+		let mut t = self.lock().unwrap();
 		match t.state {
-		   TxState::Prepared => match t.prepare_sync() {
-			   Ok(_) => t.prepare_async(cb),
-			   err => cb(err),
-		   },
-		   _ =>
-				return (*cb)(Err(String::from("InvalidState")))
+			TxState::Ok => return t.prepare(self.clone(), cb),
+			_ => return Some(Err(String::from("InvalidState")))
+		}
+	}
+	// 提交一个事务, TODO 单表事务容许预提交和提交合并？
+	fn commit(&mut self, cb: TxCallback) -> CBResult {
+		let mut t = self.lock().unwrap();
+		match t.state {
+			TxState::Ok => {
+				return t.prepare(self.clone(), cb)
+			},
+			TxState::PreparOk => return t.prepare(self.clone(), cb),
+			_ => return Some(Err(String::from("InvalidState")))
 		}
 	}
 	// 回滚一个事务
-	fn rollback(&mut self, mut cb: TxCallback) {
-		match self.read().unwrap().state {
-		   TxState::Ok => (),
-		   TxState::Prepared => (),
-		   _ =>
-				return (*cb)(Err(String::from("InvalidState")))
+	fn rollback(&mut self, cb: TxCallback) -> CBResult {
+		let mut t = self.lock().unwrap();
+		match t.state {
+			TxState::Ok => return t.prepare(self.clone(), cb),
+			TxState::PreparOk => return t.prepare(self.clone(), cb),
+			_ => return Some(Err(String::from("InvalidState")))
 		}
 	}
 	// 锁
-	fn lock(&mut self, arr:Vec<TabKey>, lock_time:usize, mut cb: TxCallback) {
-		
+	fn lock1(&mut self, arr:Vec<TabKey>, lock_time:usize, cb: TxCallback) -> CBResult {
+		return None
 	}
 	// 查询
-	fn query(&mut self, arr:Vec<TabKey>, lock_time:Option<usize>, mut cb: TxQueryCallback) {
-		
+	fn query(&mut self, arr:Vec<TabKey>, lock_time:Option<usize>, cb: TxQueryCallback) -> Option<DBResult<Vec<TabKeyValue>>> {
+		return None
 	}
 	// 插入或更新
-	fn upsert(&mut self, arr:Vec<TabKey>, lock_time:Option<usize>, mut cb: TxCallback) {
-		
+	fn upsert(&mut self, arr:Vec<TabKey>, lock_time:Option<usize>, cb: TxCallback) -> CBResult {
+		return None
 	}
 	// 删除
-	fn delete(&mut self, arr:Vec<TabKey>, lock_time:Option<usize>, mut cb: TxCallback) {
-		
+	fn delete(&mut self, arr:Vec<TabKey>, lock_time:Option<usize>, cb: TxCallback) -> CBResult {
+		return None
 	}
 	// 迭代
-	fn iter(&mut self, tab_key:TabKey, descending: bool, key_only:bool, filter:String, mut cb: TxIterCallback) {
-
+	fn iter(&mut self, tab_key:TabKey, descending: bool, key_only:bool, filter:String, cb: TxIterCallback) -> Option<DBResult<Box<Cursor>>> {
+		return None
 	}
 	// 索引迭代
-	fn index(&mut self, tab_key:TabKey, descending: bool, key_only:bool, filter:String, mut cb: TxIterCallback) {
-
+	fn index(&mut self, tab_key:TabKey, descending: bool, key_only:bool, filter:String, cb: TxIterCallback) -> Option<DBResult<Box<Cursor>>> {
+		return None
 	}
 	// 新增 修改 删除 表
-	fn alter(&mut self, tab:String, metaJson:String, mut cb: TxCallback) {
-
+	fn alter(&mut self, tab: String, clazz: String, metaJson:String, cb: TxCallback) -> CBResult {
+		return None
 	}
-
-
 }
