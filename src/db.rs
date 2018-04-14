@@ -29,17 +29,17 @@ pub trait Txn {
 	// 回滚一个事务
 	fn rollback(&mut self, TxCallback) -> CBResult;
 	// 锁
-	fn lock1(&mut self, arr:Vec<TabKey>, lock_time:usize, TxCallback) -> CBResult;
+	fn lock1(&mut self, arr:Vec<TabKV>, lock_time:usize, TxCallback) -> CBResult;
 	// 查询
-	fn query(&mut self, arr:Vec<TabKey>, lock_time:Option<usize>, TxQueryCallback) -> Option<DBResult<Vec<TabKeyValue>>>;
+	fn query(&mut self, arr:Vec<TabKV>, lock_time:Option<usize>, TxQueryCallback) -> Option<DBResult<Vec<TabKV>>>;
 	// 插入或更新
-	fn upsert(&mut self, arr:Vec<TabKey>, lock_time:Option<usize>, TxCallback) -> CBResult;
+	fn upsert(&mut self, arr:Vec<TabKV>, lock_time:Option<usize>, TxCallback) -> CBResult;
 	// 删除
-	fn delete(&mut self, arr:Vec<TabKey>, lock_time:Option<usize>, TxCallback) -> CBResult;
+	fn delete(&mut self, arr:Vec<TabKV>, lock_time:Option<usize>, TxCallback) -> CBResult;
 	// 迭代
-	fn iter(&mut self, tab_key:TabKey, descending: bool, key_only:bool, filter:String, TxIterCallback) -> Option<DBResult<Box<Cursor>>>;
+	fn iter(&mut self, tab_key:TabKV, descending: bool, key_only:bool, filter:String, TxIterCallback) -> Option<DBResult<Box<Cursor>>>;
 	// 索引迭代
-	fn index(&mut self, tab_key:TabKey, descending: bool, key_only:bool, filter:String, TxIterCallback) -> Option<DBResult<Box<Cursor>>>;
+	fn index(&mut self, tab_key:TabKV, descending: bool, key_only:bool, filter:String, TxIterCallback) -> Option<DBResult<Box<Cursor>>>;
 	// 新增 修改 删除 表
 	fn alter(&mut self, tab:String, clazz:String, metaJson:String, TxCallback) -> CBResult;
 
@@ -72,27 +72,19 @@ pub enum TxState {
 pub type DBResult<T> = Result<T, String>;
 pub type CBResult = Option<Result<(), String>>;
 
-pub type TxCallback = Arc<FnMut(Result<(), String>)>;
-pub type TxQueryCallback = Box<FnMut(DBResult<Vec<TabKeyValue>>)>;
-pub type TxIterCallback = Box<FnMut(DBResult<Box<Cursor>>)>;
+pub type TxCallback = Arc<Fn(Result<(), String>)>;
+pub type TxQueryCallback = Arc<FnMut(DBResult<Vec<TabKV>>)>;
+pub type TxIterCallback = Arc<FnMut(DBResult<Box<Cursor>>)>;
 
-/**
- * 表键条目
- * @example
- */
-pub struct TabKey {
-	tab: String,
-	key: Vec<u8>,
-}
 /**
  * 表键值条目
  * @example
  */
-pub struct TabKeyValue {
-	tab: String,
-	key: Vec<u8>,
-	index: usize,
-	value: Option<Arc<Vec<u8>>>,
+pub struct TabKV {
+	pub tab: String,
+	pub key: Vec<u8>,
+	pub index: usize,
+	pub value: Option<Arc<Vec<u8>>>,
 }
 pub trait Cursor {
 	fn state(&self) -> DBResult<bool>;

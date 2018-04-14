@@ -4,15 +4,17 @@
 /**
  * 基于2pc的db管理器，每个db实现需要将自己注册到管理器上
  */
-use std::sync::{Arc, Weak, Mutex, RwLock};
+use std::sync::{Arc, Weak, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::HashMap;
+use std::collections::hash_map::RandomState;
+use std::hash::{BuildHasher, Hasher};
 
 use pi_lib::ordmap::ImOrdMap;
 use pi_lib::asbtree::{TreeMap, new};
 
 
-use db::{TxnInfo, Txn, DB, DBBuilder, DBResult, CBResult, TxState, TabKey, TabKeyValue, Cursor, TxCallback, TxQueryCallback, TxIterCallback};
+use db::{TxnInfo, Txn, DB, DBBuilder, DBResult, CBResult, TxState, TabKV, Cursor, TxCallback, TxQueryCallback, TxIterCallback};
 
 
 pub type TxHandler = Box<FnMut(&mut ArcTx)>;
@@ -92,9 +94,10 @@ impl Tx {
 						match t.state {
 							TxState::Preparing => {
 								t.state = TxState::PreparOk;
-								let ptr = Arc::into_raw(cb.clone());
-								// ((*ptr) as FnMut(Result<(), String>))(r);
-								unsafe { Arc::from_raw(ptr) };
+								(*cb)(r)
+								//let ptr = Arc::into_raw(cb.clone());
+								//((*ptr) as FnMut(Result<(), String>))(r);
+								//unsafe { Arc::from_raw(ptr) };
 							},
 							_ => ()
 						}
@@ -105,7 +108,7 @@ impl Tx {
 					match t.state {
 						TxState::Preparing => {
 							t.state = TxState::PreparFail;
-							()// (*cb)(r),
+							(*cb)(r)
 						},
 						_ => ()
 					}
@@ -139,6 +142,61 @@ impl Tx {
 		// 	match (*val).commit(bf.clone()) {
 		// 		Some(r) => {
 		// 			if count.fetch_sub(1, Ordering::SeqCst) == 1{
+		// 				return Some(r)
+		// 			}
+		// 		},
+		// 		_ => (),
+		// 	}
+		// }
+		return None
+	}
+	// 查询
+	fn query(&mut self, atx: ArcTx, arr:Vec<TabKV>, lock_time:Option<usize>, cb: TxQueryCallback) -> Option<DBResult<Vec<TabKV>>> {
+		self.state = TxState::Preparing;
+		let count = Arc::new(AtomicUsize::new(arr.len()));
+		let c = count.clone();
+		let f = move |r: DBResult<Vec<TabKV>>| {
+			match r {
+				Ok(_) => {
+					if c.fetch_sub(1, Ordering::SeqCst) == 1 {
+						let mut t = atx.lock().unwrap();
+						match t.state {
+							TxState::Preparing => {
+								t.state = TxState::PreparOk;
+								let ptr = Arc::into_raw(cb.clone());
+								// ((*ptr) as FnMut(Result<(), String>))(r);
+								unsafe { Arc::from_raw(ptr) };
+							},
+							_ => ()
+						}
+					}
+				},
+				_ => {
+					let mut t = atx.lock().unwrap();
+					match t.state {
+						TxState::Preparing => {
+							t.state = TxState::PreparFail;
+							()// (*cb)(r),
+						},
+						_ => ()
+					}
+					
+				}
+			}
+		};
+		// let bf = Arc::new(f);
+		// for tk in arr.iter_mut() {
+		// 	tk.index = 1;
+		// 	match (*val).prepare(bf.clone()) {
+		// 		Some(r) => match r {
+		// 			Ok(_) => {
+		// 				if count.fetch_sub(1, Ordering::SeqCst) == 1 {
+		// 					self.state = TxState::PreparOk;
+		// 					return Some(r)
+		// 				}
+		// 			},
+		// 			_ => {
+		// 				self.state = TxState::PreparFail;
 		// 				return Some(r)
 		// 			}
 		// 		},
@@ -198,27 +256,31 @@ impl Txn for ArcTx {
 		}
 	}
 	// 锁
-	fn lock1(&mut self, arr:Vec<TabKey>, lock_time:usize, cb: TxCallback) -> CBResult {
+	fn lock1(&mut self, arr:Vec<TabKV>, lock_time:usize, cb: TxCallback) -> CBResult {
 		return None
 	}
 	// 查询
-	fn query(&mut self, arr:Vec<TabKey>, lock_time:Option<usize>, cb: TxQueryCallback) -> Option<DBResult<Vec<TabKeyValue>>> {
-		return None
+	fn query(&mut self, arr:Vec<TabKV>, lock_time:Option<usize>, cb: TxQueryCallback) -> Option<DBResult<Vec<TabKV>>> {
+		let mut t = self.lock().unwrap();
+		match t.state {
+			TxState::Ok => return t.query(self.clone(), arr, lock_time, cb),
+			_ => return Some(Err(String::from("InvalidState")))
+		}
 	}
 	// 插入或更新
-	fn upsert(&mut self, arr:Vec<TabKey>, lock_time:Option<usize>, cb: TxCallback) -> CBResult {
+	fn upsert(&mut self, arr:Vec<TabKV>, lock_time:Option<usize>, cb: TxCallback) -> CBResult {
 		return None
 	}
 	// 删除
-	fn delete(&mut self, arr:Vec<TabKey>, lock_time:Option<usize>, cb: TxCallback) -> CBResult {
+	fn delete(&mut self, arr:Vec<TabKV>, lock_time:Option<usize>, cb: TxCallback) -> CBResult {
 		return None
 	}
 	// 迭代
-	fn iter(&mut self, tab_key:TabKey, descending: bool, key_only:bool, filter:String, cb: TxIterCallback) -> Option<DBResult<Box<Cursor>>> {
+	fn iter(&mut self, tab_key:TabKV, descending: bool, key_only:bool, filter:String, cb: TxIterCallback) -> Option<DBResult<Box<Cursor>>> {
 		return None
 	}
 	// 索引迭代
-	fn index(&mut self, tab_key:TabKey, descending: bool, key_only:bool, filter:String, cb: TxIterCallback) -> Option<DBResult<Box<Cursor>>> {
+	fn index(&mut self, tab_key:TabKV, descending: bool, key_only:bool, filter:String, cb: TxIterCallback) -> Option<DBResult<Box<Cursor>>> {
 		return None
 	}
 	// 新增 修改 删除 表
@@ -226,3 +288,21 @@ impl Txn for ArcTx {
 		return None
 	}
 }
+
+// // 创建每表的键参数表
+// fn tab_map(arr:Vec<TabKV>) -> HashMap<String, Vec<TabKV>> {
+// 	let s = RandomState::new(); // 应该为静态常量
+// 	let mut map = HashMap::with_capacity_and_hasher(arr.len(), s);
+// 	let mut i= 1;
+// 	for tk in arr.iter_mut() {
+// 		tk.index = i;
+// 		i = i + 1;
+// 		match map.get_mut(&tk.tab) {
+// 			Some(ref r) => r.
+// 			_ => map.insert(tk.tab.clone(), vec![tk])
+// 		}
+		
+// 	}
+// 	// map.insert(1, 2);
+// 	return map
+// }
