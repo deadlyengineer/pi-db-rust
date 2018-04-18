@@ -5,3 +5,4 @@ authors = ["luob <446174359@qq.com>"]
 
 [dependencies]
 pi_lib = { path = "../pi_lib" }
+parking_lot = {version = "0.5", features = ["nightly"]}

@@ -1,8 +1,7 @@
 /**
- * db的定义
+ * Tab的定义
  * 会话负责用户、权限管理
  */
-
 
 use std::result::Result;
 use std::sync::Arc;
@@ -10,7 +9,14 @@ use std::vec::Vec;
 use std::u128;
 
 // 系统表的前缀
-const PRIFIX:&str = "_$";
+pub const PRIFIX: &str = "_$";
+
+pub type DBResult<T> = Result<T, String>;
+pub type DefaultResult = Option<Result<(), String>>;
+
+pub type TxCallback = Arc<Fn(Result<(), String>)>;
+pub type TxQueryCallback = Arc<Fn(DBResult<Vec<TabKV>>)>;
+pub type TxIterCallback = Arc<FnMut(DBResult<Box<Cursor>>)>;
 
 pub trait TxnInfo {
 	fn is_writable(&self) -> bool;
@@ -23,37 +29,61 @@ pub trait Txn {
 	// 获得事务的状态
 	fn get_state(&self) -> TxState;
 	// 预提交一个事务
-	fn prepare(&mut self, TxCallback) -> CBResult;
+	fn prepare(&mut self, TxCallback) -> DefaultResult;
 	// 提交一个事务
-	fn commit(&mut self, TxCallback) -> CBResult;
+	fn commit(&mut self, TxCallback) -> DefaultResult;
 	// 回滚一个事务
-	fn rollback(&mut self, TxCallback) -> CBResult;
+	fn rollback(&mut self, TxCallback) -> DefaultResult;
 	// 锁
-	fn lock1(&mut self, arr:Vec<TabKV>, lock_time:usize, TxCallback) -> CBResult;
+	fn lock1(&mut self, arr: Vec<TabKV>, lock_time: usize, TxCallback) -> DefaultResult;
 	// 查询
-	fn query(&mut self, arr:Vec<TabKV>, lock_time:Option<usize>, TxQueryCallback) -> Option<DBResult<Vec<TabKV>>>;
+	fn query(
+		&mut self,
+		arr: Vec<TabKV>,
+		lock_time: Option<usize>,
+		TxQueryCallback,
+	) -> Option<DBResult<Vec<TabKV>>>;
 	// 插入或更新
-	fn upsert(&mut self, arr:Vec<TabKV>, lock_time:Option<usize>, TxCallback) -> CBResult;
+	fn upsert(&mut self, arr: Vec<TabKV>, lock_time: Option<usize>, TxCallback) -> DefaultResult;
 	// 删除
-	fn delete(&mut self, arr:Vec<TabKV>, lock_time:Option<usize>, TxCallback) -> CBResult;
+	fn delete(&mut self, arr: Vec<TabKV>, lock_time: Option<usize>, TxCallback) -> DefaultResult;
 	// 迭代
-	fn iter(&mut self, tab_key:TabKV, descending: bool, key_only:bool, filter:String, TxIterCallback) -> Option<DBResult<Box<Cursor>>>;
+	fn iter(
+		&mut self,
+		tab_key: TabKV,
+		descending: bool,
+		key_only: bool,
+		filter: String,
+		TxIterCallback,
+	) -> Option<DBResult<Box<Cursor>>>;
 	// 索引迭代
-	fn index(&mut self, tab_key:TabKV, descending: bool, key_only:bool, filter:String, TxIterCallback) -> Option<DBResult<Box<Cursor>>>;
+	fn index(
+		&mut self,
+		tab_key: TabKV,
+		descending: bool,
+		key_only: bool,
+		filter: String,
+		TxIterCallback,
+	) -> Option<DBResult<Box<Cursor>>>;
 	// 新增 修改 删除 表
-	fn alter(&mut self, tab:String, clazz:String, metaJson:String, TxCallback) -> CBResult;
-
+	fn alter(&mut self, tab: Arc<String>, class: Arc<String>, metaJson: String, TxCallback) -> DefaultResult;
 }
 
 //
-pub trait DB {
+pub trait Tab {
 	// fn is_async(&self) -> bool;
-	fn transaction(&mut self, id: u128, writable: bool, timeout:usize) -> Txn;
+	fn transaction(&self, id: u128, writable: bool, timeout: usize) -> Box<Txn>;
 }
 
 //
-pub trait DBBuilder {
-	fn build(&mut self, tab:String, clazz:String, metaJson:String, TxCallback) -> Option<Result<Box<DB>, String>>;
+pub trait TabBuilder {
+	fn build(
+		&mut self,
+		tab: String,
+		clazz: String,
+		metaJson: String,
+		TxCallback,
+	) -> Option<Result<Arc<Tab>, String>>;
 }
 
 #[derive(Clone)]
@@ -69,26 +99,30 @@ pub enum TxState {
 	Rollbacked,
 }
 
-pub type DBResult<T> = Result<T, String>;
-pub type CBResult = Option<Result<(), String>>;
-
-pub type TxCallback = Arc<Fn(Result<(), String>)>;
-pub type TxQueryCallback = Arc<FnMut(DBResult<Vec<TabKV>>)>;
-pub type TxIterCallback = Arc<FnMut(DBResult<Box<Cursor>>)>;
-
 /**
  * 表键值条目
  * @example
  */
+#[derive(Default, Clone)]
 pub struct TabKV {
-	pub tab: String,
+	pub tab: Arc<String>,
 	pub key: Vec<u8>,
 	pub index: usize,
 	pub value: Option<Arc<Vec<u8>>>,
 }
+impl TabKV {
+	pub fn new(tab: String, key: Vec<u8>) -> Self {
+		TabKV{
+			tab: Arc::new(tab),
+			key: key,
+			index: 0,
+			value: None,
+		}
+	}
+}
 pub trait Cursor {
 	fn state(&self) -> DBResult<bool>;
-	fn key(&self) -> &Vec<u8>;
+	fn key(&self) -> &[u8];
 	fn value(&self) -> Option<Arc<Vec<u8>>>;
 	fn next(&mut self);
 }

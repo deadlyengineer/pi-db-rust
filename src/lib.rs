@@ -7,6 +7,7 @@
 #![feature(i128)]
 #![feature(universal_impl_trait)]
 #![feature(conservative_impl_trait)]
+#![feature(match_default_bindings)]
 #[allow(dead_code,unused_variables,non_snake_case,unused_parens,unused_assignments,unused_unsafe,unused_imports)]
 
 extern crate pi_lib;
