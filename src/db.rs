@@ -79,8 +79,7 @@ pub trait Tab {
 pub trait TabBuilder {
 	fn build(
 		&mut self,
-		tab: String,
-		class: String,
+		tab: Arc<String>,
 		meta: StructInfo,
 		cb: TxCallback,
 	) -> Option<Result<Arc<Tab>, String>>;

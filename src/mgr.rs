@@ -336,7 +336,7 @@ impl Tx {
 		}
 		return None;
 	}
-	// 修改，插入、删除及更新
+	// 新增 修改 删除 表
 	fn alter(&mut self, atx: ArcTx, tab: Arc<String>, meta: Option<StructInfo>, cb: TxCallback) -> UsizeResult {
 
 		return None;
