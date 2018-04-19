@@ -11,11 +11,13 @@ use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
 use std::mem;
 
+use fnv::FnvHashMap;
+
 use pi_lib::ordmap::ImOrdMap;
 use pi_lib::asbtree::{new, TreeMap};
+use pi_lib::sinfo::StructInfo;
 
-use db::{DefaultResult, Cursor, TabBuilder, DBResult, TabKV, TxCallback, TxIterCallback,
-         TxQueryCallback, TxState, Txn, TxnInfo, Tab};
+use db::{UsizeResult, Cursor, TabBuilder, DBResult, TabKV, TxCallback, TxIterCallback, TxQueryCallback, TxState, Txn, TxnInfo, Tab};
 
 pub type TxHandler = Box<FnMut(&mut ArcTx)>;
 
@@ -53,6 +55,7 @@ impl Mgr {
 			timeout: timeout,
 			builders: self.builders.clone(),
 			tabs: self.tabs.clone(),
+			old_tabs: self.tabs.clone(),
 			start_time: 0,
 			state: TxState::Ok,
 			timer_ref: 0,
@@ -64,27 +67,28 @@ impl Mgr {
 pub struct Tx {
 	id: u128,
 	writable: bool,
-	timeout: usize,
+	timeout: usize, // 子事务的预提交的超时时间
 	builders: TreeMap<Arc<String>, Arc<TabBuilder>>,
 	tabs: TreeMap<Arc<String>, Arc<Tab>>,
+	old_tabs: TreeMap<Arc<String>, Arc<Tab>>,
 	start_time: u64, // us
 	state: TxState,
 	timer_ref: usize,
 	txns: HashMap<Arc<String>, Option<Box<Txn>>>,
-	// result: DefaultResult,
 }
 
 impl Tx {
 	// 预提交事务
-	fn prepare(&mut self, atx: ArcTx, cb: TxCallback) -> DefaultResult {
+	fn prepare(&mut self, atx: ArcTx, cb: TxCallback) -> UsizeResult {
 		self.state = TxState::Preparing;
-		let count = Arc::new(AtomicUsize::new(self.txns.len()));
+		let len = self.txns.len();
+		let count = Arc::new(AtomicUsize::new(len));
 		let c = count.clone();
-		let f = move |r: DBResult<()>| match r {
+		let f = move |r: DBResult<usize> | match r {
 			Ok(_) => {
 				if c.fetch_sub(1, Ordering::SeqCst) == 1 {
 					if atx.set_state(TxState::Preparing, TxState::PreparOk) {
-						(*cb)(r)
+						(*cb)(Ok(len))
 					}
 				}
 			}
@@ -102,7 +106,7 @@ impl Tx {
 						Ok(_) => {
 							if count.fetch_sub(1, Ordering::SeqCst) == 1 {
 								self.state = TxState::PreparOk;
-								return Some(r);
+								return Some(Ok(len));
 							}
 						}
 						_ => {
@@ -118,7 +122,7 @@ impl Tx {
 		return None;
 	}
 	// 提交同步事务
-	fn commit(&mut self) -> DefaultResult {
+	fn commit(&mut self) -> UsizeResult {
 		// for (_, val) in self.txns.iter_mut() {
 		// 	match (*val).commit(bf.clone()) {
 		// 		Some(r) => {
@@ -129,6 +133,68 @@ impl Tx {
 		// 		_ => (),
 		// 	}
 		// }
+		return None;
+	}
+	// 修改，插入、删除及更新
+	fn klock(&mut self, atx: ArcTx, arr: Vec<TabKV>, lock_time: usize, cb: TxCallback) -> UsizeResult {
+		self.state = TxState::Doing;
+		let len = arr.len();
+		let count = Arc::new(AtomicUsize::new(self.txns.len()));
+		let c = count.clone();
+		let f = move |r: DBResult<usize> | match r {
+			Ok(rc) => {
+				if c.fetch_sub(rc, Ordering::SeqCst) == 1 {
+					if atx.set_state(TxState::Doing, TxState::Ok) {
+						(*cb)(Ok(len))
+					}
+				}
+			}
+			_ => {
+				if atx.set_state(TxState::Doing, TxState::Fail) {
+					(*cb)(r)
+				}
+			}
+		};
+		let bf = Arc::new(f);
+		let map = tab_map(arr);
+		let tabs = &self.tabs;
+		let id = self.id;
+		let writable = self.writable;
+		let timeout = self.timeout;
+		for (key, val) in map.into_iter() {
+			match self.txns.entry(key.clone()).or_insert_with(move || {
+				// 创建新的子事务
+				match tabs.get(&key) {
+					Some(ref tab) => {
+						Some(tab.transaction(id, writable, timeout))
+					},
+					_ => None
+				}
+			}) {
+				&mut Some(ref mut txn) => {
+					// 调用每个子事务的修改
+					match txn.klock(val, lock_time, bf.clone()) {
+						Some(r) => match r {
+							Ok(rc) => {
+								if count.fetch_sub(rc, Ordering::SeqCst) == 1 {
+									self.state = TxState::Ok;
+									return Some(Ok(len));
+								}
+							}
+							_ => {
+								self.state = TxState::Fail;
+								return Some(r);
+							}
+						},
+						_ => ()
+					}
+				},
+				_ => {
+					self.state = TxState::Fail;
+					return Some(Err(String::from("TabNotFound")))
+				}
+			}
+		}
 		return None;
 	}
 	// 查询
@@ -158,7 +224,7 @@ impl Tx {
 				}
 			}
 			_ => {
-				if atx.set_state(TxState::Doing, TxState::Ok) {
+				if atx.set_state(TxState::Doing, TxState::Fail) {
 					(*cb)(r)
 				}
 			}
@@ -193,7 +259,7 @@ impl Tx {
 								}
 							}
 							_ => {
-								self.state = TxState::Ok;
+								self.state = TxState::Fail;
 								return Some(r)
 							}
 						},
@@ -201,11 +267,78 @@ impl Tx {
 					}
 				},
 				_ => {
-					self.state = TxState::Ok;
+					self.state = TxState::Fail;
 					return Some(Err(String::from("TabNotFound")))
 				}
 			}
 		}
+		return None;
+	}
+	// 修改，插入、删除及更新
+	fn modify(&mut self, atx: ArcTx, arr: Vec<TabKV>, lock_time: Option<usize>, cb: TxCallback) -> UsizeResult {
+		self.state = TxState::Doing;
+		let len = arr.len();
+		let count = Arc::new(AtomicUsize::new(self.txns.len()));
+		let c = count.clone();
+		let f = move |r: DBResult<usize> | match r {
+			Ok(rc) => {
+				if c.fetch_sub(rc, Ordering::SeqCst) == 1 {
+					if atx.set_state(TxState::Doing, TxState::Ok) {
+						(*cb)(Ok(len))
+					}
+				}
+			}
+			_ => {
+				if atx.set_state(TxState::Doing, TxState::Fail) {
+					(*cb)(r)
+				}
+			}
+		};
+		let bf = Arc::new(f);
+		let map = tab_map(arr);
+		let tabs = &self.tabs;
+		let id = self.id;
+		let writable = self.writable;
+		let timeout = self.timeout;
+		for (key, val) in map.into_iter() {
+			match self.txns.entry(key.clone()).or_insert_with(move || {
+				// 创建新的子事务
+				match tabs.get(&key) {
+					Some(ref tab) => {
+						Some(tab.transaction(id, writable, timeout))
+					},
+					_ => None
+				}
+			}) {
+				&mut Some(ref mut txn) => {
+					// 调用每个子事务的修改
+					match txn.modify(val, lock_time, bf.clone()) {
+						Some(r) => match r {
+							Ok(rc) => {
+								if count.fetch_sub(rc, Ordering::SeqCst) == 1 {
+									self.state = TxState::Ok;
+									return Some(Ok(len));
+								}
+							}
+							_ => {
+								self.state = TxState::Fail;
+								return Some(r);
+							}
+						},
+						_ => ()
+					}
+				},
+				_ => {
+					self.state = TxState::Fail;
+					return Some(Err(String::from("TabNotFound")))
+				}
+			}
+		}
+		return None;
+	}
+	// 修改，插入、删除及更新
+	fn alter(&mut self, atx: ArcTx, tab: Arc<String>, meta: Option<StructInfo>, cb: TxCallback) -> UsizeResult {
+
 		return None;
 	}
 }
@@ -242,7 +375,7 @@ impl Txn for ArcTx {
 		self.lock().unwrap().state.clone()
 	}
 	// 预提交一个事务
-	fn prepare(&mut self, cb: TxCallback) -> DefaultResult {
+	fn prepare(&mut self, cb: TxCallback) -> UsizeResult {
 		let mut t = self.lock().unwrap();
 		match t.state {
 			TxState::Ok => return t.prepare(self.clone(), cb),
@@ -250,7 +383,7 @@ impl Txn for ArcTx {
 		}
 	}
 	// 提交一个事务, TODO 单表事务容许预提交和提交合并？
-	fn commit(&mut self, cb: TxCallback) -> DefaultResult {
+	fn commit(&mut self, cb: TxCallback) -> UsizeResult {
 		let mut t = self.lock().unwrap();
 		match t.state {
 			TxState::Ok => return t.prepare(self.clone(), cb),
@@ -259,7 +392,7 @@ impl Txn for ArcTx {
 		}
 	}
 	// 回滚一个事务
-	fn rollback(&mut self, cb: TxCallback) -> DefaultResult {
+	fn rollback(&mut self, cb: TxCallback) -> UsizeResult {
 		let mut t = self.lock().unwrap();
 		match t.state {
 			TxState::Ok => return t.prepare(self.clone(), cb),
@@ -268,8 +401,12 @@ impl Txn for ArcTx {
 		}
 	}
 	// 锁
-	fn lock1(&mut self, arr: Vec<TabKV>, lock_time: usize, cb: TxCallback) -> DefaultResult {
-		return None;
+	fn klock(&mut self, arr: Vec<TabKV>, lock_time: usize, cb: TxCallback) -> UsizeResult {
+		let mut t = self.lock().unwrap();
+		match t.state {
+			TxState::Ok => return t.klock(self.clone(), arr, lock_time, cb),
+			_ => return Some(Err(String::from("InvalidState"))),
+		}
 	}
 	// 查询
 	fn query(
@@ -284,13 +421,13 @@ impl Txn for ArcTx {
 			_ => return Some(Err(String::from("InvalidState"))),
 		}
 	}
-	// 插入或更新
-	fn upsert(&mut self, arr: Vec<TabKV>, lock_time: Option<usize>, cb: TxCallback) -> DefaultResult {
-		return None;
-	}
-	// 删除
-	fn delete(&mut self, arr: Vec<TabKV>, lock_time: Option<usize>, cb: TxCallback) -> DefaultResult {
-		return None;
+	// 修改，插入、删除及更新
+	fn modify(&mut self, arr: Vec<TabKV>, lock_time: Option<usize>, cb: TxCallback) -> UsizeResult {
+		let mut t = self.lock().unwrap();
+		match t.state {
+			TxState::Ok => return t.modify(self.clone(), arr, lock_time, cb),
+			_ => return Some(Err(String::from("InvalidState"))),
+		}
 	}
 	// 迭代
 	fn iter(
@@ -315,16 +452,19 @@ impl Txn for ArcTx {
 		return None;
 	}
 	// 新增 修改 删除 表
-	fn alter(&mut self, tab: Arc<String>, class: Arc<String>, metaJson: String, cb: TxCallback) -> DefaultResult {
-		return None;
+	fn alter(&mut self, tab: Arc<String>, meta: Option<StructInfo>, cb: TxCallback) -> UsizeResult {
+		let mut t = self.lock().unwrap();
+		match t.state {
+			TxState::Ok => return t.alter(self.clone(), tab, meta, cb),
+			_ => return Some(Err(String::from("InvalidState"))),
+		}
 	}
 }
 
 // 创建每表的键参数表，不负责键的去重
-fn tab_map(mut arr: Vec<TabKV>) -> HashMap<Arc<String>, Vec<TabKV>> {
-	let s = RandomState::new(); // 应该为静态常量
+fn tab_map(mut arr: Vec<TabKV>) -> FnvHashMap<Arc<String>, Vec<TabKV>> {
 	let mut len = arr.len();
-	let mut map: HashMap<Arc<String>, Vec<TabKV>> = HashMap::with_capacity_and_hasher(len, s);
+	let mut map = FnvHashMap::with_capacity_and_hasher(len, Default::default());
 	while len > 0 {
 		let mut tk = arr.pop().unwrap();
 		tk.index = len;

@@ -11,6 +11,7 @@
 #[allow(dead_code,unused_variables,non_snake_case,unused_parens,unused_assignments,unused_unsafe,unused_imports)]
 
 extern crate pi_lib;
+extern crate fnv;
 
 pub mod db;
 pub mod mgr;
