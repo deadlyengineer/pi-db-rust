@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::vec::Vec;
 use std::u128;
 
+use pi_lib::atom::Atom;
 use pi_lib::sinfo::StructInfo;
 
 // 系统表的前缀
@@ -18,14 +19,8 @@ pub type UsizeResult = Option<Result<usize, String>>;
 
 pub type TxCallback = Arc<Fn(Result<usize, String>)>;
 pub type TxQueryCallback = Arc<Fn(DBResult<Vec<TabKV>>)>;
-pub type TxIterCallback = Arc<FnMut(DBResult<Box<Cursor>>)>;
+pub type TxIterCallback = Arc<Fn(DBResult<Box<Cursor>>)>;
 
-pub trait TxnInfo {
-	fn is_writable(&self) -> bool;
-	// 获得事务的超时时间
-	fn get_timeout(&self) -> usize;
-	// 获得事务的状态
-}
 
 pub trait Txn {
 	// 获得事务的状态
@@ -50,7 +45,8 @@ pub trait Txn {
 	// 迭代
 	fn iter(
 		&mut self,
-		tab_key: TabKV,
+		tab: Atom,
+		key: Option<Vec<u8>>,
 		descending: bool,
 		key_only: bool,
 		filter: String,
@@ -59,30 +55,39 @@ pub trait Txn {
 	// 索引迭代
 	fn index(
 		&mut self,
-		tab_key: TabKV,
+		tab: Atom,
+		key: Option<Vec<u8>>,
 		descending: bool,
-		key_only: bool,
 		filter: String,
 		cb: TxIterCallback,
 	) -> Option<DBResult<Box<Cursor>>>;
-	// 新增 修改 删除 表
-	fn alter(&mut self, tab: Arc<String>, meta: Option<StructInfo>, cb: TxCallback) -> UsizeResult;
+	// 表的大小
+	fn tab_size(&mut self, tab: Atom, cb: TxCallback) -> UsizeResult;
 }
 
 //
 pub trait Tab {
 	fn transaction(&self, id: u128, writable: bool, timeout: usize) -> Box<Txn>;
-	fn destroy(mut self);
 }
 
 //
 pub trait TabBuilder {
+	fn iter(
+		&self,
+		cb: TxIterCallback,
+	) -> Option<DBResult<Box<Cursor>>>;
 	fn build(
 		&mut self,
-		tab: Arc<String>,
-		meta: StructInfo,
+		tab: Atom,
+		meta: Arc<Vec<u8>>,
 		cb: TxCallback,
 	) -> Option<Result<Arc<Tab>, String>>;
+	fn alter(
+		&mut self,
+		meta: Arc<Vec<u8>>,
+		cb: TxCallback,
+	) -> Option<Result<Arc<Tab>, String>>;
+	fn delete(&mut self, tab: Atom);
 }
 
 #[derive(Clone)]
@@ -105,7 +110,7 @@ pub enum TxState {
  */
 #[derive(Default, Clone)]
 pub struct TabKV {
-	pub tab: Arc<String>,
+	pub tab: Atom,
 	pub key: Vec<u8>,
 	pub index: usize,
 	pub value: Option<Arc<Vec<u8>>>,

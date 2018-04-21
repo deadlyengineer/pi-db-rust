@@ -15,17 +15,19 @@ use fnv::FnvHashMap;
 
 use pi_lib::ordmap::ImOrdMap;
 use pi_lib::asbtree::{new, TreeMap};
+use pi_lib::atom::Atom;
 use pi_lib::sinfo::StructInfo;
+use pi_lib::util::VecIndex;
 
-use db::{UsizeResult, Cursor, TabBuilder, DBResult, TabKV, TxCallback, TxIterCallback, TxQueryCallback, TxState, Txn, TxnInfo, Tab};
+use db::{UsizeResult, Cursor, TabBuilder, DBResult, TabKV, TxCallback, TxIterCallback, TxQueryCallback, TxState, Txn, Tab};
 
 pub type TxHandler = Box<FnMut(&mut ArcTx)>;
 
 pub struct Mgr {
 	// 构建器
-	builders: TreeMap<Arc<String>, Arc<TabBuilder>>,
+	builders: TreeMap<Atom, Arc<TabBuilder>>,
 	//数据表
-	tabs: TreeMap<Arc<String>, Arc<Tab>>,
+	tabs: TreeMap<Atom, Arc<Tab>>,
 	// 定时轮
 	// 管理用的弱引用事务
 	map: TreeMap<u128, Weak<Tx>>,
@@ -33,16 +35,18 @@ pub struct Mgr {
 
 impl Mgr {
 	// 注册构建器
-	fn register_builder(&mut self, class: Arc<String>, builder: Box<TabBuilder>) -> bool {
-		return false;
+	fn register_builder(&mut self, class: Atom, builder: Arc<TabBuilder>) -> bool {
+		self.builders.insert(class, builder)
+		//builder.iter()
 	}
 	// 注册数据表
-	fn register_tab(&mut self, name: Arc<String>, db: Box<Tab>) -> bool {
-		return false;
+	fn register_tab(&mut self, name: Atom, tab: Arc<Tab>) -> bool {
+		self.tabs.insert(name, tab)
 	}
 	// 取消注册数据库
-	fn unregister_builder(&mut self, class: Arc<String>) {}
-
+	fn unregister_builder(&mut self, class: Atom) -> Option<Arc<TabBuilder>> {
+		self.builders.delete(&class, true).unwrap()
+	}
 
 	// 读事务，无限尝试直到超时，默认10秒
 	fn read(&mut self, tx: TxHandler, timeout: usize, cb: TxCallback) {}
@@ -56,6 +60,7 @@ impl Mgr {
 			builders: self.builders.clone(),
 			tabs: self.tabs.clone(),
 			old_tabs: self.tabs.clone(),
+			alter_tabs: Vec::new(),
 			start_time: 0,
 			state: TxState::Ok,
 			timer_ref: 0,
@@ -68,13 +73,14 @@ pub struct Tx {
 	id: u128,
 	writable: bool,
 	timeout: usize, // 子事务的预提交的超时时间
-	builders: TreeMap<Arc<String>, Arc<TabBuilder>>,
-	tabs: TreeMap<Arc<String>, Arc<Tab>>,
-	old_tabs: TreeMap<Arc<String>, Arc<Tab>>,
+	builders: TreeMap<Atom, Arc<TabBuilder>>,
+	tabs: TreeMap<Atom, Arc<Tab>>,
+	old_tabs: TreeMap<Atom, Arc<Tab>>,
+	alter_tabs: Vec<Atom>,
 	start_time: u64, // us
 	state: TxState,
 	timer_ref: usize,
-	txns: HashMap<Arc<String>, Option<Box<Txn>>>,
+	txns: HashMap<Atom, Option<Box<Txn>>>,
 }
 
 impl Tx {
@@ -337,8 +343,15 @@ impl Tx {
 		return None;
 	}
 	// 新增 修改 删除 表
-	fn alter(&mut self, atx: ArcTx, tab: Arc<String>, meta: Option<StructInfo>, cb: TxCallback) -> UsizeResult {
-
+	fn alter(&mut self, atx: ArcTx, tab: Atom, meta: Option<StructInfo>, cb: TxCallback) -> UsizeResult {
+		match meta {
+			Some(info) => {
+				
+			},
+			_ => {
+				//self.alter_tabs.swap_delete(index)
+			}
+		}
 		return None;
 	}
 }
@@ -359,7 +372,58 @@ impl ArcTxFn for ArcTx {
 	}
 }
 
-impl TxnInfo for ArcTx {
+
+pub trait Tr {
+	fn is_writable(&self) -> bool;
+	// 获得事务的超时时间
+	fn get_timeout(&self) -> usize;
+	// 获得事务的状态
+	fn get_state(&self) -> TxState;
+	// 预提交一个事务
+	fn prepare(&mut self, cb: TxCallback) -> UsizeResult;
+	// 提交一个事务
+	fn commit(&mut self, cb: TxCallback) -> UsizeResult;
+	// 回滚一个事务
+	fn rollback(&mut self, cb: TxCallback) -> UsizeResult;
+	// 键锁，key可以不存在，根据lock_time的值决定是锁还是解锁
+	fn klock(&mut self, arr: Vec<TabKV>, lock_time: usize, cb: TxCallback) -> UsizeResult;
+	// 查询
+	fn query(
+		&mut self,
+		arr: Vec<TabKV>,
+		lock_time: Option<usize>,
+		cb: TxQueryCallback,
+	) -> Option<DBResult<Vec<TabKV>>>;
+	// 修改，插入、删除及更新
+	fn modify(&mut self, arr: Vec<TabKV>, lock_time: Option<usize>, TxCallback) -> UsizeResult;
+	// 迭代
+	fn iter(
+		&mut self,
+		tab: Atom,
+		key: Option<Vec<u8>>,
+		descending: bool,
+		key_only: bool,
+		filter: String,
+		TxIterCallback,
+	) -> Option<DBResult<Box<Cursor>>>;
+	// 索引迭代
+	fn index(
+		&mut self,
+		tab: Atom,
+		key: Option<Vec<u8>>,
+		descending: bool,
+		filter: String,
+		cb: TxIterCallback,
+	) -> Option<DBResult<Box<Cursor>>>;
+	// 表的元信息
+	fn tab_info(&mut self, tab: Atom) -> Option<StructInfo>;
+	// 表的大小
+	fn tab_size(&mut self, tab: Atom, cb: TxCallback) -> UsizeResult;
+	// 新增 修改 删除 表
+	fn alter(&mut self, tab: Atom, meta: Option<StructInfo>, cb: TxCallback) -> UsizeResult;
+}
+
+impl Tr for ArcTx {
 	// 判断事务是否可写
 	fn is_writable(&self) -> bool {
 		self.lock().unwrap().writable
@@ -368,8 +432,6 @@ impl TxnInfo for ArcTx {
 	fn get_timeout(&self) -> usize {
 		self.lock().unwrap().timeout
 	}
-}
-impl Txn for ArcTx {
 	// 获得事务的状态
 	fn get_state(&self) -> TxState {
 		self.lock().unwrap().state.clone()
@@ -432,27 +494,36 @@ impl Txn for ArcTx {
 	// 迭代
 	fn iter(
 		&mut self,
-		tab_key: TabKV,
+		tab: Atom,
+		key: Option<Vec<u8>>,
 		descending: bool,
 		key_only: bool,
 		filter: String,
 		cb: TxIterCallback,
 	) -> Option<DBResult<Box<Cursor>>> {
-		return None;
+		None
 	}
 	// 索引迭代
 	fn index(
 		&mut self,
-		tab_key: TabKV,
+		tab: Atom,
+		key: Option<Vec<u8>>,
 		descending: bool,
-		key_only: bool,
 		filter: String,
 		cb: TxIterCallback,
 	) -> Option<DBResult<Box<Cursor>>> {
-		return None;
+		None
+	}
+	// 表的元信息
+	fn tab_info(&mut self, tab: Atom) -> Option<StructInfo> {
+		None
+	}
+	// 表的大小
+	fn tab_size(&mut self, tab: Atom, cb: TxCallback) -> UsizeResult {
+		None
 	}
 	// 新增 修改 删除 表
-	fn alter(&mut self, tab: Arc<String>, meta: Option<StructInfo>, cb: TxCallback) -> UsizeResult {
+	fn alter(&mut self, tab: Atom, meta: Option<StructInfo>, cb: TxCallback) -> UsizeResult {
 		let mut t = self.lock().unwrap();
 		match t.state {
 			TxState::Ok => return t.alter(self.clone(), tab, meta, cb),
@@ -462,7 +533,7 @@ impl Txn for ArcTx {
 }
 
 // 创建每表的键参数表，不负责键的去重
-fn tab_map(mut arr: Vec<TabKV>) -> FnvHashMap<Arc<String>, Vec<TabKV>> {
+fn tab_map(mut arr: Vec<TabKV>) -> FnvHashMap<Atom, Vec<TabKV>> {
 	let mut len = arr.len();
 	let mut map = FnvHashMap::with_capacity_and_hasher(len, Default::default());
 	while len > 0 {
