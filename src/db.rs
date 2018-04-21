@@ -118,7 +118,7 @@ pub struct TabKV {
 impl TabKV {
 	pub fn new(tab: String, key: Vec<u8>) -> Self {
 		TabKV{
-			tab: Arc::new(tab),
+			tab: Atom::from(tab),
 			key: key,
 			index: 0,
 			value: None,

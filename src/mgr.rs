@@ -36,16 +36,19 @@ pub struct Mgr {
 impl Mgr {
 	// 注册构建器
 	fn register_builder(&mut self, class: Atom, builder: Arc<TabBuilder>) -> bool {
-		self.builders.insert(class, builder)
+		//self.builders.insert(class, builder)
 		//builder.iter()
+		false
 	}
 	// 注册数据表
 	fn register_tab(&mut self, name: Atom, tab: Arc<Tab>) -> bool {
-		self.tabs.insert(name, tab)
+		//self.tabs.insert(name, tab)
+		false
 	}
 	// 取消注册数据库
 	fn unregister_builder(&mut self, class: Atom) -> Option<Arc<TabBuilder>> {
-		self.builders.delete(&class, true).unwrap()
+		//self.builders.delete(&class, true).unwrap()
+		None
 	}
 
 	// 读事务，无限尝试直到超时，默认10秒
@@ -170,12 +173,13 @@ impl Tx {
 		for (key, val) in map.into_iter() {
 			match self.txns.entry(key.clone()).or_insert_with(move || {
 				// 创建新的子事务
-				match tabs.get(&key) {
-					Some(ref tab) => {
-						Some(tab.transaction(id, writable, timeout))
-					},
-					_ => None
-				}
+				// match tabs.get(&key) {
+				// 	Some(ref tab) => {
+				// 		Some(tab.transaction(id, writable, timeout))
+				// 	},
+				// 	_ => None
+				// }
+				None
 			}) {
 				&mut Some(ref mut txn) => {
 					// 调用每个子事务的修改
@@ -244,12 +248,13 @@ impl Tx {
 		for (key, val) in map.into_iter() {
 			match self.txns.entry(key.clone()).or_insert_with(move || {
 				// 创建新的子事务
-				match tabs.get(&key) {
-					Some(ref tab) => {
-						Some(tab.transaction(id, writable, timeout))
-					},
-					_ => None
-				}
+				// match tabs.get(&key) {
+				// 	Some(ref tab) => {
+				// 		Some(tab.transaction(id, writable, timeout))
+				// 	},
+				// 	_ => None
+				// }
+				None
 			}) {
 				&mut Some(ref mut txn) => {
 					// 调用每个子事务查询
@@ -309,12 +314,13 @@ impl Tx {
 		for (key, val) in map.into_iter() {
 			match self.txns.entry(key.clone()).or_insert_with(move || {
 				// 创建新的子事务
-				match tabs.get(&key) {
-					Some(ref tab) => {
-						Some(tab.transaction(id, writable, timeout))
-					},
-					_ => None
-				}
+				// match tabs.get(&key) {
+				// 	Some(ref tab) => {
+				// 		Some(tab.transaction(id, writable, timeout))
+				// 	},
+				// 	_ => None
+				// }
+				None
 			}) {
 				&mut Some(ref mut txn) => {
 					// 调用每个子事务的修改
@@ -396,6 +402,15 @@ pub trait Tr {
 	) -> Option<DBResult<Vec<TabKV>>>;
 	// 修改，插入、删除及更新
 	fn modify(&mut self, arr: Vec<TabKV>, lock_time: Option<usize>, TxCallback) -> UsizeResult;
+	// 范围查询
+	fn range(
+		&mut self,
+		tab: Atom,
+		min_key:Vec<u8>,
+		max_key:Vec<u8>,
+		key_only: bool,
+		cb: TxQueryCallback,
+	) -> Option<DBResult<Vec<TabKV>>>;
 	// 迭代
 	fn iter(
 		&mut self,
@@ -490,6 +505,17 @@ impl Tr for ArcTx {
 			TxState::Ok => return t.modify(self.clone(), arr, lock_time, cb),
 			_ => return Some(Err(String::from("InvalidState"))),
 		}
+	}
+	// 范围查询
+	fn range(
+		&mut self,
+		tab: Atom,
+		min_key:Vec<u8>,
+		max_key:Vec<u8>,
+		key_only: bool,
+		cb: TxQueryCallback,
+	) -> Option<DBResult<Vec<TabKV>>> {
+		None
 	}
 	// 迭代
 	fn iter(
