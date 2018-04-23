@@ -13,8 +13,8 @@ use std::mem;
 
 use fnv::FnvHashMap;
 
-use pi_lib::ordmap::ImOrdMap;
-use pi_lib::asbtree::{new, TreeMap};
+use pi_lib::ordmap::{OrdMap, ImOrdMap};
+use pi_lib::asbtree::Tree;
 use pi_lib::atom::Atom;
 use pi_lib::sinfo::StructInfo;
 use pi_lib::util::VecIndex;
@@ -25,12 +25,12 @@ pub type TxHandler = Box<FnMut(&mut ArcTx)>;
 
 pub struct Mgr {
 	// 构建器
-	builders: TreeMap<Atom, Arc<TabBuilder>>,
+	builders: OrdMap<Tree<Atom, Arc<TabBuilder>>>,
 	//数据表
-	tabs: TreeMap<Atom, Arc<Tab>>,
+	tabs: OrdMap<Tree<Atom, Arc<Tab>>>,
 	// 定时轮
 	// 管理用的弱引用事务
-	map: TreeMap<u128, Weak<Tx>>,
+	map: OrdMap<Tree<u128, Weak<Tx>>>,
 }
 
 impl Mgr {
@@ -73,9 +73,9 @@ pub struct Tx {
 	id: u128,
 	writable: bool,
 	timeout: usize, // 子事务的预提交的超时时间
-	builders: TreeMap<Atom, Arc<TabBuilder>>,
-	tabs: TreeMap<Atom, Arc<Tab>>,
-	old_tabs: TreeMap<Atom, Arc<Tab>>,
+	builders: OrdMap<Tree<Atom, Arc<TabBuilder>>>,
+	tabs: OrdMap<Tree<Atom, Arc<Tab>>>,
+	old_tabs: OrdMap<Tree<Atom, Arc<Tab>>>,
 	alter_tabs: Vec<Atom>,
 	start_time: u64, // us
 	state: TxState,
