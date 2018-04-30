@@ -6,88 +6,130 @@
 use std::result::Result;
 use std::sync::Arc;
 use std::vec::Vec;
-use std::u128;
 
 use pi_lib::atom::Atom;
+use pi_lib::guid::Guid;
 use pi_lib::sinfo::StructInfo;
 
 // 系统表的前缀
 pub const PRIFIX: &str = "_$";
 
 pub type DBResult<T> = Result<T, String>;
-pub type UsizeResult = Option<Result<usize, String>>;
+pub type UsizeResult = Option<DBResult<usize>>;
 
-pub type TxCallback = Arc<Fn(Result<usize, String>)>;
+pub type TxCallback = Arc<Fn(DBResult<usize>)>;
 pub type TxQueryCallback = Arc<Fn(DBResult<Vec<TabKV>>)>;
 pub type TxIterCallback = Arc<Fn(DBResult<Box<Cursor>>)>;
 
-
+// 每个表的事务
 pub trait Txn {
 	// 获得事务的状态
-	fn get_state(&self) -> TxState;
+	fn get_state(&self) -> TxState {
+		TxState::Fail
+	}
 	// 预提交一个事务
-	fn prepare(&mut self, cb: TxCallback) -> UsizeResult;
+	fn prepare(&self, cb: TxCallback) -> UsizeResult {
+		None
+	}
 	// 提交一个事务
-	fn commit(&mut self, cb: TxCallback) -> UsizeResult;
+	fn commit(&self, cb: TxCallback) -> UsizeResult {
+		None
+	}
 	// 回滚一个事务
-	fn rollback(&mut self, cb: TxCallback) -> UsizeResult;
+	fn rollback(&self, cb: TxCallback) -> UsizeResult {
+		None
+	}
 	// 键锁，key可以不存在，根据lock_time的值决定是锁还是解锁
-	fn klock(&mut self, arr: Vec<TabKV>, lock_time: usize, cb: TxCallback) -> UsizeResult;
+	fn key_lock(&self, arr: Arc<Vec<TabKV>>, lock_time: usize, cb: TxCallback) -> UsizeResult {
+		None
+	}
 	// 查询
 	fn query(
-		&mut self,
-		arr: Vec<TabKV>,
+		&self,
+		arr: Arc<Vec<TabKV>>,
 		lock_time: Option<usize>,
 		cb: TxQueryCallback,
-	) -> Option<DBResult<Vec<TabKV>>>;
+	) -> Option<DBResult<Vec<TabKV>>> {
+		None
+	}
 	// 修改，插入、删除及更新
-	fn modify(&mut self, arr: Vec<TabKV>, lock_time: Option<usize>, TxCallback) -> UsizeResult;
+	fn modify(&self, arr: Arc<Vec<TabKV>>, lock_time: Option<usize>, cb: TxCallback) -> UsizeResult {
+		None
+	}
 	// 迭代
 	fn iter(
-		&mut self,
+		&self,
 		tab: Atom,
 		key: Option<Vec<u8>>,
 		descending: bool,
 		key_only: bool,
 		filter: String,
-		TxIterCallback,
-	) -> Option<DBResult<Box<Cursor>>>;
+		cb: TxIterCallback,
+	) -> Option<DBResult<Box<Cursor>>> {
+		None
+	}
 	// 索引迭代
 	fn index(
-		&mut self,
+		&self,
 		tab: Atom,
 		key: Option<Vec<u8>>,
 		descending: bool,
 		filter: String,
 		cb: TxIterCallback,
-	) -> Option<DBResult<Box<Cursor>>>;
+	) -> Option<DBResult<Box<Cursor>>> {
+		None
+	}
 	// 表的大小
-	fn tab_size(&mut self, tab: Atom, cb: TxCallback) -> UsizeResult;
+	fn tab_size(&self, cb: TxCallback) -> UsizeResult {
+		None
+	}
 }
 
 //
 pub trait Tab {
-	fn transaction(&self, id: u128, writable: bool, timeout: usize) -> Box<Txn>;
+	fn transaction(&self, id: Guid, writable: bool, timeout: usize) -> Arc<Txn>;
 }
 
 //
 pub trait TabBuilder {
-	fn iter(
+	// 获得对应的类别
+	fn get_class(
 		&self,
-		cb: TxIterCallback,
-	) -> Option<DBResult<Box<Cursor>>>;
-	fn build(
-		&mut self,
+	) -> Atom;
+	// 列出全部的表
+	fn list(
+		&self,
+	) -> Vec<(Atom, Arc<StructInfo>)>;
+	// 检查该表是否可以创建
+	fn check(
+		&self,
 		tab: Atom,
-		meta: Arc<Vec<u8>>,
-		cb: TxCallback,
-	) -> Option<Result<Arc<Tab>, String>>;
+		meta: Arc<StructInfo>,
+	) -> DBResult<()>;
+	// 创建指定的表
+	fn build(
+		&self,
+		tab: Atom,
+		meta: Arc<StructInfo>,
+		cb: Box<Fn(DBResult<Arc<Tab>>)>,
+	) -> Option<DBResult<Arc<Tab>>>;
+	// 删除指定的表
+	fn delete(&self, tab: Atom);
+
+	// 事务修改指定表的元数据
 	fn alter(
-		&mut self,
-		meta: Arc<Vec<u8>>,
+		&self,
+		tr: Guid,
+		tab: Atom,
+		meta: Option<Arc<StructInfo>>,
 		cb: TxCallback,
 	) -> Option<Result<Arc<Tab>, String>>;
-	fn delete(&mut self, tab: Atom);
+	// 预提交一个alter事务
+	fn prepare(&self, tr: Guid, cb: TxCallback) -> UsizeResult;
+	// 提交一个alter事务
+	fn commit(&self, tr: Guid, cb: TxCallback) -> UsizeResult;
+	// 回滚一个alter事务
+	fn rollback(&self, tr: Guid, cb: TxCallback) -> UsizeResult;
 }
 
 #[derive(Clone)]
