@@ -124,11 +124,10 @@ pub trait TabBuilder {
 	fn list(
 		&self,
 	) -> Vec<(Atom, Arc<StructInfo>)>;
-	// 创建指定的表
-	fn build(
+	// 打开指定的表，表必须有meta
+	fn open(
 		&self,
 		tab: &Atom,
-		meta: Arc<StructInfo>,
 		cb: Box<Fn(DBResult<Arc<Tab>>)>,
 	) -> Option<DBResult<Arc<Tab>>>;
 	// 检查该表是否可以创建

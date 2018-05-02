@@ -17,94 +17,38 @@ use db::{UsizeResult, Cursor, DBResult, TabKV, TxCallback, TxIterCallback, TxQue
 
 pub type TxHandler = Box<FnMut(&mut Tr)>;
 
-
 // 表、事务管理器
-pub struct Mgr {
-	// 构建器
-	builders: OrdMap<Tree<Atom, Arc<TabBuilder>>>,
-	//数据表
-	tabs: OrdMap<Tree<Atom, TabInfo>>,
-	// 事务ID生成器
-	gen: GuidGen,
-	// 当前的事务数量
-	tr_count: AtomicUsize,
-	// 定时轮
-	// 管理用的弱引用事务
-	weak_map: Mutex<FnvHashMap<Guid, Weak<Mutex<Tx>>>>,
-	// 预提交的表
-	prepare: Mutex<FnvHashMap<Guid, Tr>>,
-}
+#[derive(Clone)]
+pub struct Mgr(Arc<(Mutex<Manager>, GuidGen)>);
 
 impl Mgr {
 	// 注册管理器
 	pub fn new(gen: GuidGen) -> Self {
-		Mgr {
-			builders : OrdMap::new(new()),
-			tabs : OrdMap::new(new()),
-			gen: gen,
-			tr_count: AtomicUsize::new(0),
-			weak_map: Mutex::new(FnvHashMap::with_capacity_and_hasher(0, Default::default())),
-			prepare: Mutex::new(FnvHashMap::with_capacity_and_hasher(0, Default::default())),
-		}
+		Mgr(Arc::new((Mutex::new(Manager::new()), gen)))
 	}
 	// 注册构建器
-	pub fn register_builder(&mut self, builder: Arc<TabBuilder>) -> bool {
-		let b = self.builders.insert(builder.get_class().clone(), builder.clone());
-		if !b {
-			return b;
-		}
-		// 加载全部的表
-		for (name, meta) in builder.list() {
-			self.tabs.insert(name.clone(), TabInfo::new(builder.clone(), meta));
-		};
-		return true;
+	pub fn register_builder(&self, builder: Arc<TabBuilder>) -> bool {
+		(self.0).0.lock().unwrap().register_builder(builder)
 	}
 	// 取消注册数据库
 	pub fn unregister_builder(&mut self, class: &Atom) -> Option<Arc<TabBuilder>> {
-		match self.builders.delete(class, true) {
-			Some(r) => r,
-			_ => None,
-		}
+		(self.0).0.lock().unwrap().unregister_builder(class)
 	}
 	// 表的元信息
 	pub fn tab_info(&self, tab: &Atom) -> Option<Arc<StructInfo>> {
-		match self.tabs.get(tab) {
-			Some(ref info) => Some(info.meta.clone()),
-			_ => None,
-		}
+		(self.0).0.lock().unwrap().tab_info(tab)
 	}
 
 	// 读事务，无限尝试直到超时，默认10秒
-	pub fn read(&mut self, tx: TxHandler, timeout: usize, cb: TxCallback) {}
+	pub fn read(&self, tx: TxHandler, timeout: usize, cb: TxCallback) {}
 	// 写事务，无限尝试直到超时，默认10秒
-	pub fn write(&mut self, tx: TxHandler, timeout: usize, cb: TxCallback) {}
+	pub fn write(&self, tx: TxHandler, timeout: usize, cb: TxCallback) {}
 	// 创建事务
-	pub fn transaction(&mut self, writable: bool, timeout: usize) -> Tr {
-		let id = self.gen.gen(0);
-		let tr = Tr(Arc::new(Mutex::new(Tx {
-			id: id.clone(),
-			writable: writable,
-			timeout: timeout,
-			builders: self.builders.clone(),
-			tabs: self.tabs.clone(),
-			old_tabs: self.tabs.clone(),
-			state: TxState::Ok,
-			timer_ref: 0,
-			tab_txns: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
-			meta_txns: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
-			alter_logs: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
-			rename_logs: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
-		})));
-		self.tr_count.fetch_add(1, Ordering::SeqCst);
-		let mut weak_map = self.weak_map.lock().unwrap();
-		weak_map.insert(id, Arc::downgrade(&(tr.0)));
-		tr
+	pub fn transaction(&self, writable: bool, timeout: usize) -> Tr {
+		let id = (self.0).1.gen(0);
+		(self.0).0.lock().unwrap().transaction(self.clone(), writable, timeout, id)
 	}
 
-	// 注册数据表
-	fn register_tab(&mut self, name: &Atom, info: TabInfo) -> bool {
-		self.tabs.insert(name.clone(), info)
-	}
 	// 表的预提交
 	fn parpare(&mut self, name: &Atom) -> bool {
 		false
@@ -113,6 +57,7 @@ impl Mgr {
 	fn commit(&mut self, name: &Atom) -> bool {
 		false
 	}
+
 }
 
 
@@ -240,6 +185,9 @@ impl Tr {
 	// 创建、修改或删除表
 	pub fn alter(&mut self, tab: &Atom, meta: Option<Arc<StructInfo>>, cb: TxCallback) -> UsizeResult {
 		let mut t = self.0.lock().unwrap();
+		if !t.writable {
+			return Some(Err(String::from("Readonly")))
+		}
 		match t.state {
 			TxState::Ok => t.alter(self, tab, meta, cb),
 			_ => Some(Err(String::from("InvalidState"))),
@@ -266,6 +214,91 @@ impl Tr {
 
 
 //================================ 内部结构和方法
+// 表、事务管理器
+struct Manager {
+	// 构建器
+	builders: OrdMap<Tree<Atom, Arc<TabBuilder>>>,
+	//数据表
+	tabs: OrdMap<Tree<Atom, TabInfo>>,
+	// 当前的事务数量
+	tr_count: AtomicUsize,
+	// 定时轮
+	// 管理用的弱引用事务
+	weak_map: Mutex<FnvHashMap<Guid, Weak<Mutex<Tx>>>>,
+	// 预提交的表
+	prepare: Mutex<FnvHashMap<Guid, Tr>>,
+}
+
+impl Manager {
+	// 注册管理器
+	fn new() -> Self {
+		Manager {
+			builders : OrdMap::new(new()),
+			tabs : OrdMap::new(new()),
+			tr_count: AtomicUsize::new(0),
+			weak_map: Mutex::new(FnvHashMap::with_capacity_and_hasher(0, Default::default())),
+			prepare: Mutex::new(FnvHashMap::with_capacity_and_hasher(0, Default::default())),
+		}
+	}
+	// 注册构建器
+	fn register_builder(&mut self, builder: Arc<TabBuilder>) -> bool {
+		let b = self.builders.insert(builder.get_class().clone(), builder.clone());
+		if !b {
+			return b;
+		}
+		// 加载全部的表
+		for (name, meta) in builder.list() {
+			self.tabs.insert(name.clone(), TabInfo::new(builder.clone(), meta));
+		};
+		return true;
+	}
+	// 取消注册数据库
+	fn unregister_builder(&mut self, class: &Atom) -> Option<Arc<TabBuilder>> {
+		match self.builders.delete(class, true) {
+			Some(r) => r,
+			_ => None,
+		}
+	}
+	// 表的元信息
+	fn tab_info(&self, tab: &Atom) -> Option<Arc<StructInfo>> {
+		match self.tabs.get(tab) {
+			Some(ref info) => Some(info.meta.clone()),
+			_ => None,
+		}
+	}
+	// 创建事务
+	fn transaction(&mut self, mgr: Mgr, writable: bool, timeout: usize, id: Guid) -> Tr {
+		let tr = Tr(Arc::new(Mutex::new(Tx {
+			mgr: mgr,
+			writable: writable,
+			timeout: timeout,
+			id: id.clone(),
+			builders: self.builders.clone(),
+			tabs: self.tabs.clone(),
+			old_tabs: self.tabs.clone(),
+			state: TxState::Ok,
+			timer_ref: 0,
+			tab_txns: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
+			meta_txns: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
+			alter_logs: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
+			rename_logs: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
+		})));
+		self.tr_count.fetch_add(1, Ordering::SeqCst);
+		let mut weak_map = self.weak_map.lock().unwrap();
+		weak_map.insert(id, Arc::downgrade(&(tr.0)));
+		tr
+	}
+
+	// 表的预提交
+	fn parpare(&mut self, name: &Atom) -> bool {
+		false
+	}
+	// 表的提交
+	fn commit(&mut self, name: &Atom) -> bool {
+		false
+	}
+}
+
 // 表信息
 #[derive(Clone)]
 struct TabInfo {
@@ -291,9 +324,10 @@ impl TabInfo {
 }
 
 struct Tx {
-	id: Guid,
+	mgr: Mgr,
 	writable: bool,
 	timeout: usize, // 子事务的预提交的超时时间
+	id: Guid,
 	builders: OrdMap<Tree<Atom, Arc<TabBuilder>>>,
 	tabs: OrdMap<Tree<Atom, TabInfo>>,
 	old_tabs: OrdMap<Tree<Atom, TabInfo>>, // 用于判断mgr中tabs是否修改过
@@ -310,6 +344,9 @@ impl Tx {
 	fn prepare(&mut self, tr: &Tr, cb: TxCallback) -> UsizeResult {
 		self.state = TxState::Preparing;
 		// TODO 处理tab alter的预提交
+		if self.meta_txns.len() > 0 {
+
+		}
 		let len = self.tab_txns.len();
 		let count = Arc::new(AtomicUsize::new(len));
 		let c = count.clone();
@@ -594,7 +631,7 @@ impl Tx {
 							Some(ref mut vec) => {// 表尚未build
 								if vec.len() == 0 {// 第一次调用
 									let var1 = info.var.clone();
-									match info.builder.build(tab_name, info.meta.clone(), Box::new(move |tab| {
+									match info.builder.open(tab_name, Box::new(move |tab| {
 										// 异步返回，解锁后设置结果，返回等待函数数组
 										let vec:Vec<Box<Fn(DBResult<Arc<Tab>>)>> = {
 											let mut var = var1.lock().unwrap();
