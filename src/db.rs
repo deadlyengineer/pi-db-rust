@@ -21,7 +21,7 @@ pub type TxCallback = Arc<Fn(DBResult<usize>)>;
 pub type TxQueryCallback = Arc<Fn(DBResult<Vec<TabKV>>)>;
 pub type TxIterCallback = Arc<Fn(DBResult<Box<Cursor>>)>;
 
-// 每个表的事务
+//事务
 pub trait Txn {
 	// 获得事务的状态
 	fn get_state(&self) -> TxState {
@@ -39,6 +39,10 @@ pub trait Txn {
 	fn rollback(&self, cb: TxCallback) -> UsizeResult {
 		None
 	}
+}
+
+// 每个表的事务
+pub trait TabTxn : Txn{
 	// 键锁，key可以不存在，根据lock_time的值决定是锁还是解锁
 	fn key_lock(&self, arr: Arc<Vec<TabKV>>, lock_time: usize, cb: TxCallback) -> UsizeResult {
 		None
@@ -59,7 +63,7 @@ pub trait Txn {
 	// 迭代
 	fn iter(
 		&self,
-		tab: Atom,
+		tab: &Atom,
 		key: Option<Vec<u8>>,
 		descending: bool,
 		key_only: bool,
@@ -71,7 +75,7 @@ pub trait Txn {
 	// 索引迭代
 	fn index(
 		&self,
-		tab: Atom,
+		tab: &Atom,
 		key: Option<Vec<u8>>,
 		descending: bool,
 		filter: String,
@@ -87,49 +91,55 @@ pub trait Txn {
 
 //
 pub trait Tab {
-	fn transaction(&self, id: Guid, writable: bool, timeout: usize) -> Arc<Txn>;
+	fn transaction(&self, id: &Guid, writable: bool, timeout: usize) -> Arc<TabTxn>;
 }
 
-//
+// 每个TabBuilder的元信息事务
+pub trait MetaTxn : Txn {
+
+	// 创建表、修改指定表的元数据
+	fn alter(
+		&self,
+		tab: &Atom,
+		meta: Option<Arc<StructInfo>>,
+		cb: TxCallback,
+	) -> UsizeResult;
+	// 修改指定表的名字
+	fn rename(
+		&self,
+		tab: &Atom,
+		new_name: &Atom,
+		cb: TxCallback,
+	) -> UsizeResult;
+
+}
+
+// 表构建器
 pub trait TabBuilder {
 	// 获得对应的类别
 	fn get_class(
 		&self,
-	) -> Atom;
+	) -> &Atom;
 	// 列出全部的表
 	fn list(
 		&self,
 	) -> Vec<(Atom, Arc<StructInfo>)>;
-	// 检查该表是否可以创建
-	fn check(
-		&self,
-		tab: Atom,
-		meta: Arc<StructInfo>,
-	) -> DBResult<()>;
 	// 创建指定的表
 	fn build(
 		&self,
-		tab: Atom,
+		tab: &Atom,
 		meta: Arc<StructInfo>,
 		cb: Box<Fn(DBResult<Arc<Tab>>)>,
 	) -> Option<DBResult<Arc<Tab>>>;
-	// 删除指定的表
-	fn delete(&self, tab: Atom);
-
-	// 事务修改指定表的元数据
-	fn alter(
+	// 检查该表是否可以创建
+	fn check(
 		&self,
-		tr: Guid,
-		tab: Atom,
-		meta: Option<Arc<StructInfo>>,
-		cb: TxCallback,
-	) -> Option<Result<Arc<Tab>, String>>;
-	// 预提交一个alter事务
-	fn prepare(&self, tr: Guid, cb: TxCallback) -> UsizeResult;
-	// 提交一个alter事务
-	fn commit(&self, tr: Guid, cb: TxCallback) -> UsizeResult;
-	// 回滚一个alter事务
-	fn rollback(&self, tr: Guid, cb: TxCallback) -> UsizeResult;
+		tab: &Atom,
+		meta: &Arc<StructInfo>,
+	) -> DBResult<()>;
+	// 创建一个meta事务
+	fn transaction(&self, id: &Guid, timeout: usize) -> Arc<MetaTxn>;
+
 }
 
 #[derive(Clone)]
@@ -158,9 +168,9 @@ pub struct TabKV {
 	pub value: Option<Arc<Vec<u8>>>,
 }
 impl TabKV {
-	pub fn new(tab: String, key: Vec<u8>) -> Self {
+	pub fn new(tab: Atom, key: Vec<u8>) -> Self {
 		TabKV{
-			tab: Atom::from(tab),
+			tab: tab,
 			key: key,
 			index: 0,
 			value: None,
