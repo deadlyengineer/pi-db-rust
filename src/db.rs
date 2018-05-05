@@ -116,10 +116,6 @@ pub trait MetaTxn : Txn {
 
 // 表构建器
 pub trait TabBuilder {
-	// 获得对应的类别
-	fn get_class(
-		&self,
-	) -> &Atom;
 	// 列出全部的表
 	fn list(
 		&self,

@@ -27,12 +27,12 @@ impl Mgr {
 		Mgr(Arc::new((Mutex::new(Manager::new()), gen)))
 	}
 	// 注册构建器
-	pub fn register_builder(&self, builder: Arc<TabBuilder>) -> bool {
-		(self.0).0.lock().unwrap().register_builder(builder)
+	pub fn register_builder(&self, prefix: &Atom, builder: Arc<TabBuilder>) -> bool {
+		(self.0).0.lock().unwrap().register_builder(prefix, builder)
 	}
 	// 取消注册数据库
-	pub fn unregister_builder(&mut self, class: &Atom) -> Option<Arc<TabBuilder>> {
-		(self.0).0.lock().unwrap().unregister_builder(class)
+	pub fn unregister_builder(&mut self, prefix: &Atom) -> Option<Arc<TabBuilder>> {
+		(self.0).0.lock().unwrap().unregister_builder(prefix)
 	}
 	// 表的元信息
 	pub fn tab_info(&self, tab: &Atom) -> Option<Arc<StructInfo>> {
@@ -54,8 +54,8 @@ impl Mgr {
 		(self.0).0.lock().unwrap().parpare(tx)
 	}
 	// 表的提交
-	fn commit(&mut self, name: &Atom) -> bool {
-		false
+	fn commit(&mut self, id: &Guid) {
+		(self.0).0.lock().unwrap().commit(id)
 	}
 
 }
@@ -219,7 +219,6 @@ impl Tr {
 	}
 }
 
-
 //================================ 内部结构和方法
 // 表、事务管理器
 struct Manager {
@@ -248,8 +247,8 @@ impl Manager {
 		}
 	}
 	// 注册构建器
-	fn register_builder(&mut self, builder: Arc<TabBuilder>) -> bool {
-		let b = self.builders.insert(builder.get_class().clone(), builder.clone());
+	fn register_builder(&mut self, prefix: &Atom, builder: Arc<TabBuilder>) -> bool {
+		let b = self.builders.insert(prefix.clone(), builder.clone());
 		if !b {
 			return b;
 		}
@@ -260,8 +259,8 @@ impl Manager {
 		return true;
 	}
 	// 取消注册数据库
-	fn unregister_builder(&mut self, class: &Atom) -> Option<Arc<TabBuilder>> {
-		match self.builders.delete(class, true) {
+	fn unregister_builder(&mut self, prefix: &Atom) -> Option<Arc<TabBuilder>> {
+		match self.builders.delete(prefix, true) {
 			Some(r) => r,
 			_ => None,
 		}
@@ -307,11 +306,11 @@ impl Manager {
 		// 然后检查数据表是否被修改
 		if self.tabs.is_modify(&tx.old_tabs) {
 			// 如果被修改，则检查是否有冲突
-			// TODO 暂时没有考虑删除的情况
-			for name in tx.meta_txns.keys() {
+			// TODO 暂时没有考虑重命名的情况
+			for name in tx.meta_names.iter() {
 				match self.tabs.get(name) {
 					Some(r1) => match tx.old_tabs.get(name) {
-						Some(r1) => (),
+						Some(r2) if (r1 as *const TabInfo) == (r2 as *const TabInfo) => (),
 						_ => return Err(String::from("meta parpare conflicted"))
 					}
 					_ => match tx.old_tabs.get(name) {
