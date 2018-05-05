@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::mem;
 
-use fnv::FnvHashMap;
+use fnv::{FnvHashMap, FnvHashSet};
 
 use pi_lib::ordmap::OrdMap;
 use pi_lib::asbtree::{Tree, new};
@@ -49,9 +49,9 @@ impl Mgr {
 		(self.0).0.lock().unwrap().transaction(self.clone(), writable, timeout, id)
 	}
 
-	// 表的预提交
-	fn parpare(&mut self, name: &Atom) -> bool {
-		false
+	// 元信息的预提交
+	fn parpare(&self, tx: &mut Tx) -> DBResult<usize> {
+		(self.0).0.lock().unwrap().parpare(tx)
 	}
 	// 表的提交
 	fn commit(&mut self, name: &Atom) -> bool {
@@ -127,6 +127,9 @@ impl Tr {
 	// 修改，插入、删除及更新
 	pub fn modify(&mut self, arr: Vec<TabKV>, lock_time: Option<usize>, cb: TxCallback) -> UsizeResult {
 		let mut t = self.0.lock().unwrap();
+		if !t.writable {
+			return Some(Err(String::from("Readonly")))
+		}
 		match t.state {
 			TxState::Ok => t.modify(self, arr, lock_time, cb),
 			_ => Some(Err(String::from("InvalidState"))),
@@ -196,11 +199,15 @@ impl Tr {
 	// 表改名
 	pub fn rename(&mut self, tab: &Atom, new_name: Atom, cb: TxCallback) -> UsizeResult {
 		let mut t = self.0.lock().unwrap();
+		if !t.writable {
+			return Some(Err(String::from("Readonly")))
+		}
 		match t.state {
 			TxState::Ok => t.rename(self, tab, new_name, cb),
 			_ => Some(Err(String::from("InvalidState"))),
 		}
 	}
+
 	// 比较并设置状态
 	fn cs_state(&self, old: TxState, new: TxState) -> bool {
 		let mut t = self.0.lock().unwrap();
@@ -224,9 +231,9 @@ struct Manager {
 	tr_count: AtomicUsize,
 	// 定时轮
 	// 管理用的弱引用事务
-	weak_map: Mutex<FnvHashMap<Guid, Weak<Mutex<Tx>>>>,
-	// 预提交的表
-	prepare: Mutex<FnvHashMap<Guid, Tr>>,
+	weak_map: FnvHashMap<Guid, Weak<Mutex<Tx>>>,
+	// 预提交的交易
+	prepare: FnvHashMap<Guid, (OrdMap<Tree<Atom, TabInfo>>, OrdMap<Tree<Atom, TabInfo>>, FnvHashSet<Atom>, FnvHashMap<(Atom, usize), Option<Arc<StructInfo>>>, FnvHashMap<Atom, (Atom, usize)>)>,
 }
 
 impl Manager {
@@ -236,8 +243,8 @@ impl Manager {
 			builders : OrdMap::new(new()),
 			tabs : OrdMap::new(new()),
 			tr_count: AtomicUsize::new(0),
-			weak_map: Mutex::new(FnvHashMap::with_capacity_and_hasher(0, Default::default())),
-			prepare: Mutex::new(FnvHashMap::with_capacity_and_hasher(0, Default::default())),
+			weak_map: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
+			prepare: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
 		}
 	}
 	// 注册构建器
@@ -280,22 +287,57 @@ impl Manager {
 			timer_ref: 0,
 			tab_txns: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
 			meta_txns: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
+			meta_names: FnvHashSet::with_capacity_and_hasher(0, Default::default()),
 			alter_logs: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
 			rename_logs: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
 		})));
 		self.tr_count.fetch_add(1, Ordering::SeqCst);
-		let mut weak_map = self.weak_map.lock().unwrap();
-		weak_map.insert(id, Arc::downgrade(&(tr.0)));
+		self.weak_map.insert(id, Arc::downgrade(&(tr.0)));
 		tr
 	}
 
-	// 表的预提交
-	fn parpare(&mut self, name: &Atom) -> bool {
-		false
+	// 元信息的预提交
+	fn parpare(&mut self, tx: &mut Tx) -> DBResult<usize> {
+		// 先检查预提交的交易是否有冲突
+		for val in self.prepare.values() {
+			if val.2.is_disjoint(&tx.meta_names) {
+				return Err(String::from("meta parpare conflicting"))
+			}
+		}
+		// 然后检查数据表是否被修改
+		if self.tabs.is_modify(&tx.old_tabs) {
+			// 如果被修改，则检查是否有冲突
+			// TODO 暂时没有考虑删除的情况
+			for name in tx.meta_txns.keys() {
+				match self.tabs.get(name) {
+					Some(r1) => match tx.old_tabs.get(name) {
+						Some(r1) => (),
+						_ => return Err(String::from("meta parpare conflicted"))
+					}
+					_ => match tx.old_tabs.get(name) {
+						None => (),
+						_ => return Err(String::from("meta parpare conflicted"))
+					}
+				}
+			}
+		}
+		let set = mem::replace(&mut tx.meta_names, FnvHashSet::with_capacity_and_hasher(0, Default::default()));
+		let alter = mem::replace(&mut tx.alter_logs, FnvHashMap::with_capacity_and_hasher(0, Default::default()));
+		let rename = mem::replace(&mut tx.rename_logs, FnvHashMap::with_capacity_and_hasher(0, Default::default()));
+		self.prepare.insert(tx.id.clone(), (tx.tabs.clone(), tx.old_tabs.clone(), set, alter, rename));
+		Ok(1)
 	}
 	// 表的提交
-	fn commit(&mut self, name: &Atom) -> bool {
-		false
+	fn commit(&mut self, id: &Guid) {
+		match self.prepare.remove(id) {
+			Some((tabs, old_tabs, _, _, _)) => if self.tabs.is_modify(&old_tabs) {
+				// 检查数据表是否被修改， 如果没有修改，则可以直接替换根节点
+				self.tabs = tabs;
+			}else{
+				// 否则，重新执行一遍修改， TODO
+			}
+			_ => ()
+		}
 	}
 }
 
@@ -324,17 +366,18 @@ impl TabInfo {
 }
 
 struct Tx {
-	mgr: Mgr,
+	mgr: Mgr, // TODO 下面6个可以放到锁的外部，减少锁
 	writable: bool,
 	timeout: usize, // 子事务的预提交的超时时间
 	id: Guid,
 	builders: OrdMap<Tree<Atom, Arc<TabBuilder>>>,
-	tabs: OrdMap<Tree<Atom, TabInfo>>,
 	old_tabs: OrdMap<Tree<Atom, TabInfo>>, // 用于判断mgr中tabs是否修改过
+	tabs: OrdMap<Tree<Atom, TabInfo>>,
 	state: TxState,
 	timer_ref: usize,
 	tab_txns: FnvHashMap<Atom, Arc<TabTxn>>, //表事务表
 	meta_txns: FnvHashMap<Atom, Arc<MetaTxn>>, //元信息事务表
+	meta_names: FnvHashSet<Atom>, //元信息表的名字
 	alter_logs: FnvHashMap<(Atom, usize), Option<Arc<StructInfo>>>, // 记录每个被改过元信息的表
 	rename_logs: FnvHashMap<Atom, (Atom, usize)>, // 新名字->(源名字, 版本号)
 }
@@ -345,7 +388,11 @@ impl Tx {
 		self.state = TxState::Preparing;
 		// TODO 处理tab alter的预提交
 		if self.meta_txns.len() > 0 {
-
+			let mgr = self.mgr.clone();
+			match mgr.parpare(self) {
+				Ok(_) => (),
+				err => return Some(err)
+			}
 		}
 		let len = self.tab_txns.len();
 		let count = Arc::new(AtomicUsize::new(len));
@@ -603,6 +650,7 @@ impl Tx {
 		self.alter_logs.entry(tab_ver.clone()).or_insert(meta.clone());
 		let id = &self.id;
 		let timeout = self.timeout;
+		self.meta_names.insert(tab.clone());
 		let txn = self.meta_txns.entry(tab.clone()).or_insert_with(|| {
 			builder.transaction(id, timeout)
 		}).clone();
