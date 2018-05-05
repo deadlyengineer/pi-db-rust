@@ -53,11 +53,14 @@ impl Mgr {
 	fn parpare(&self, tx: &mut Tx) -> DBResult<usize> {
 		(self.0).0.lock().unwrap().parpare(tx)
 	}
-	// 表的提交
-	fn commit(&mut self, id: &Guid) {
+	// 元信息的提交
+	fn commit(&self, id: &Guid) {
 		(self.0).0.lock().unwrap().commit(id)
 	}
-
+	// 回滚
+	fn rollback(&self, id: &Guid) {
+		(self.0).0.lock().unwrap().rockback(id)
+	}
 }
 
 
@@ -89,7 +92,6 @@ impl Tr {
 	pub fn commit(&mut self, cb: TxCallback) -> UsizeResult {
 		let mut t = self.0.lock().unwrap();
 		match t.state {
-			TxState::Ok => t.prepare(self, cb),
 			TxState::PreparOk => t.prepare(self, cb),
 			_ => Some(Err(String::from("InvalidState"))),
 		}
@@ -98,16 +100,16 @@ impl Tr {
 	pub fn rollback(&mut self, cb: TxCallback) -> UsizeResult {
 		let mut t = self.0.lock().unwrap();
 		match t.state {
-			TxState::Ok => t.prepare(self, cb),
-			TxState::PreparOk => t.prepare(self, cb),
-			_ => Some(Err(String::from("InvalidState"))),
+			TxState::Committing|TxState::Commited|TxState::CommitFail|TxState::Rollbacking|TxState::Rollbacked|TxState::RollbackFail =>
+				return Some(Err(String::from("InvalidState"))),
+			_ => t.rollback(self, cb)
 		}
 	}
 	// 锁
-	pub fn key_lock(&mut self, arr: Vec<TabKV>, lock_time: usize, cb: TxCallback) -> UsizeResult {
+	pub fn key_lock(&mut self, arr: Vec<TabKV>, lock_time: usize, readonly: bool, cb: TxCallback) -> UsizeResult {
 		let mut t = self.0.lock().unwrap();
 		match t.state {
-			TxState::Ok => t.key_lock(self, arr, lock_time, cb),
+			TxState::Ok => t.key_lock(self, arr, lock_time, readonly, cb),
 			_ => Some(Err(String::from("InvalidState"))),
 		}
 	}
@@ -116,22 +118,23 @@ impl Tr {
 		&mut self,
 		mut arr: Vec<TabKV>,
 		lock_time: Option<usize>,
+		readonly: bool,
 		cb: TxQueryCallback,
 	) -> Option<DBResult<Vec<TabKV>>> {
 		let mut t = self.0.lock().unwrap();
 		match t.state {
-			TxState::Ok => t.query(self, arr, lock_time, cb),
+			TxState::Ok => t.query(self, arr, lock_time, readonly, cb),
 			_ => Some(Err(String::from("InvalidState"))),
 		}
 	}
 	// 修改，插入、删除及更新
-	pub fn modify(&mut self, arr: Vec<TabKV>, lock_time: Option<usize>, cb: TxCallback) -> UsizeResult {
+	pub fn modify(&mut self, arr: Vec<TabKV>, lock_time: Option<usize>, readonly: bool, cb: TxCallback) -> UsizeResult {
 		let mut t = self.0.lock().unwrap();
 		if !t.writable {
 			return Some(Err(String::from("Readonly")))
 		}
 		match t.state {
-			TxState::Ok => t.modify(self, arr, lock_time, cb),
+			TxState::Ok => t.modify(self, arr, lock_time, readonly, cb),
 			_ => Some(Err(String::from("InvalidState"))),
 		}
 	}
@@ -326,7 +329,7 @@ impl Manager {
 		self.prepare.insert(tx.id.clone(), (tx.tabs.clone(), tx.old_tabs.clone(), set, alter, rename));
 		Ok(1)
 	}
-	// 表的提交
+	// 元信息的提交
 	fn commit(&mut self, id: &Guid) {
 		match self.prepare.remove(id) {
 			Some((tabs, old_tabs, _, _, _)) => if self.tabs.is_modify(&old_tabs) {
@@ -337,6 +340,10 @@ impl Manager {
 			}
 			_ => ()
 		}
+	}
+	// 回滚
+	fn rockback(&mut self, id: &Guid) {
+		self.prepare.remove(id);
 	}
 }
 
@@ -385,19 +392,20 @@ impl Tx {
 	// 预提交事务
 	fn prepare(&mut self, tr: &Tr, cb: TxCallback) -> UsizeResult {
 		self.state = TxState::Preparing;
-		// TODO 处理tab alter的预提交
-		if self.meta_txns.len() > 0 {
+		// 先检查mgr上的meta alter的预提交
+		let alter_len = self.meta_txns.len();
+		if alter_len > 0 {
 			let mgr = self.mgr.clone();
 			match mgr.parpare(self) {
 				Ok(_) => (),
 				err => return Some(err)
 			}
 		}
-		let len = self.tab_txns.len();
+		let len = self.tab_txns.len() + alter_len;
 		let count = Arc::new(AtomicUsize::new(len));
 		let c = count.clone();
 		let tr1 = tr.clone();
-		let f = move |r: DBResult<usize> | match r {
+		let bf = Arc::new(move |r: DBResult<usize> | match r {
 			Ok(_) => if c.fetch_sub(1, Ordering::SeqCst) == 1 {
 				if tr1.cs_state(TxState::Preparing, TxState::PreparOk) {
 					(*cb)(Ok(len))
@@ -406,9 +414,10 @@ impl Tx {
 			_ => if tr1.cs_state(TxState::Preparing, TxState::PreparFail) {
 				(*cb)(r)
 			}
-		};
-		let bf = Arc::new(f);
-		for (_, val) in self.tab_txns.iter_mut() {
+		});
+
+		//处理每个表的预提交
+		for val in self.tab_txns.values_mut() {
 			match val.prepare(bf.clone()) {
 				Some(r) => match r {
 					Ok(_) => {
@@ -421,28 +430,142 @@ impl Tx {
 						self.state = TxState::PreparFail;
 						return Some(r);
 					}
-				},
-				_ => (),
+				}
+				_ => ()
+			}
+		}
+		//处理tab alter的预提交
+		for val in self.meta_txns.values_mut() {
+			match val.prepare(bf.clone()) {
+				Some(r) => match r {
+					Ok(_) => {
+						if count.fetch_sub(1, Ordering::SeqCst) == 1 {
+							self.state = TxState::PreparOk;
+							return Some(Ok(len));
+						}
+					}
+					_ => {
+						self.state = TxState::PreparFail;
+						return Some(r);
+					}
+				}
+				_ => ()
 			}
 		}
 		None
 	}
-	// 提交同步事务
-	fn commit(&mut self) -> UsizeResult {
-		// for (_, val) in self.tab_txns.iter_mut() {
-		// 	match (*val).commit(bf.clone()) {
-		// 		Some(r) => {
-		// 			if count.fetch_sub(1, Ordering::SeqCst) == 1{
-		// 				return Some(r)
-		// 			}
-		// 		},
-		// 		_ => (),
-		// 	}
-		// }
+	// 提交事务
+	fn commit(&mut self, tr: &Tr, cb: TxCallback) -> UsizeResult {
+		self.state = TxState::Committing;
+		// 先提交mgr上的事务
+		let alter_len = self.meta_txns.len();
+		if alter_len > 0 {
+			let mgr = self.mgr.clone();
+			mgr.commit(&self.id)
+		}
+		let len = self.tab_txns.len() + alter_len;
+		let count = Arc::new(AtomicUsize::new(len));
+		let c = count.clone();
+		let tr1 = tr.clone();
+		let bf = Arc::new(move |r: DBResult<usize> | {
+			match r {
+				Ok(_) => tr1.cs_state(TxState::Committing, TxState::Commited),
+				_ => tr1.cs_state(TxState::Committing, TxState::CommitFail)
+			};
+			if c.fetch_sub(1, Ordering::SeqCst) == 1 {
+				(*cb)(Ok(len))
+			}
+		});
+
+		//处理每个表的预提交
+		for val in self.tab_txns.values_mut() {
+			match val.commit(bf.clone()) {
+				Some(r) => {
+					match r {
+						Ok(_) => (),
+						_ => self.state = TxState::CommitFail
+					};
+					if count.fetch_sub(1, Ordering::SeqCst) == 1 {
+						return Some(Ok(len))
+					}
+				}
+				_ => ()
+			}
+		}
+		//处理tab alter的预提交
+		for val in self.meta_txns.values_mut() {
+			match val.commit(bf.clone()) {
+				Some(r) => {
+					match r {
+						Ok(_) => (),
+						_ => self.state = TxState::CommitFail
+					};
+					if count.fetch_sub(1, Ordering::SeqCst) == 1 {
+						return Some(Ok(len))
+					}
+				}
+				_ => ()
+			}
+		}
+		None
+	}
+	// 回滚事务
+	fn rollback(&mut self, tr: &Tr, cb: TxCallback) -> UsizeResult {
+		self.state = TxState::Rollbacking;
+		// 先回滚mgr上的事务
+		let alter_len = self.meta_txns.len();
+		if alter_len > 0 {
+			let mgr = self.mgr.clone();
+			mgr.rollback(&self.id)
+		}
+		let len = self.tab_txns.len() + alter_len;
+		let count = Arc::new(AtomicUsize::new(len));
+		let c = count.clone();
+		let tr1 = tr.clone();
+		let bf = Arc::new(move |r: DBResult<usize> | {
+			match r {
+				Ok(_) => tr1.cs_state(TxState::Rollbacking, TxState::Rollbacked),
+				_ => tr1.cs_state(TxState::Rollbacking, TxState::RollbackFail)
+			};
+			if c.fetch_sub(1, Ordering::SeqCst) == 1 {
+				(*cb)(Ok(len))
+			}
+		});
+
+		//处理每个表的预提交
+		for val in self.tab_txns.values_mut() {
+			match val.rollback(bf.clone()) {
+				Some(r) => {
+					match r {
+						Ok(_) => (),
+						_ => self.state = TxState::RollbackFail
+					};
+					if count.fetch_sub(1, Ordering::SeqCst) == 1 {
+						return Some(Ok(len))
+					}
+				}
+				_ => ()
+			}
+		}
+		//处理tab alter的预提交
+		for val in self.meta_txns.values_mut() {
+			match val.rollback(bf.clone()) {
+				Some(r) => {
+					match r {
+						Ok(_) => (),
+						_ => self.state = TxState::RollbackFail
+					};
+					if count.fetch_sub(1, Ordering::SeqCst) == 1 {
+						return Some(Ok(len))
+					}
+				}
+				_ => ()
+			}
+		}
 		None
 	}
 	// 修改，插入、删除及更新
-	fn key_lock(&mut self, tr: &Tr, arr: Vec<TabKV>, lock_time: usize, cb: TxCallback) -> UsizeResult {
+	fn key_lock(&mut self, tr: &Tr, arr: Vec<TabKV>, lock_time: usize, readonly: bool, cb: TxCallback) -> UsizeResult {
 		self.state = TxState::Doing;
 		let len = arr.len();
 		let count = Arc::new(AtomicUsize::new(len));
@@ -462,7 +585,7 @@ impl Tx {
 			let tr2 = tr.clone();
 			match self.build(tr, &key, Box::new(move |r| {
 				match r {
-					Ok(t) => match t.key_lock(tkv1.clone(), lock_time, bf1.clone()) {
+					Ok(t) => match t.key_lock(tkv1.clone(), lock_time, readonly, bf1.clone()) {
 						Some(r) => handle_result(r, &tr2, len, &c2, &cb2),
 						_ => ()
 					},
@@ -470,7 +593,7 @@ impl Tx {
 				}
 			})) {
 				Some(r) => match r {
-					Ok(t) => match self.handle_result(&count, len, t.key_lock(tkv, lock_time, bf.clone())) {
+					Ok(t) => match self.handle_result(&count, len, t.key_lock(tkv, lock_time, readonly, bf.clone())) {
 						None => (),
 						rr => return rr
 					}
@@ -487,6 +610,7 @@ impl Tx {
 		tr: &Tr,
 		arr: Vec<TabKV>,
 		lock_time: Option<usize>,
+		readonly: bool,
 		cb: TxQueryCallback,
 	) -> Option<DBResult<Vec<TabKV>>> {
 		self.state = TxState::Doing;
@@ -510,14 +634,14 @@ impl Tx {
 			let cb2 = cb.clone();
 			let tr2 = tr.clone();
 			match self.build(tr, &key, Box::new(move |r| match r {
-				Ok(t) => match t.query(tkv1.clone(), lock_time, bf1.clone()) {
+				Ok(t) => match t.query(tkv1.clone(), lock_time, readonly, bf1.clone()) {
 					Some(r) => query_result(r, &tr2, &c2, &cb2),
 					_ => ()
 				},
 				Err(s) => (*cb2)(Err(s))
 			})) {
 				Some(r) => match r {
-					Ok(t) => match t.query(tkv, lock_time, bf.clone()) {
+					Ok(t) => match t.query(tkv, lock_time, readonly, bf.clone()) {
 						Some(r) => match r {
 							Ok(vec) => {
 								match merge_result(&rvec, vec) {
@@ -543,7 +667,7 @@ impl Tx {
 		None
 	}
 	// 修改，插入、删除及更新
-	fn modify(&mut self, tr: &Tr, arr: Vec<TabKV>, lock_time: Option<usize>, cb: TxCallback) -> UsizeResult {
+	fn modify(&mut self, tr: &Tr, arr: Vec<TabKV>, lock_time: Option<usize>, readonly: bool, cb: TxCallback) -> UsizeResult {
 		self.state = TxState::Doing;
 		let len = arr.len();
 		let count = Arc::new(AtomicUsize::new(len));
@@ -563,7 +687,7 @@ impl Tx {
 			let tr2 = tr.clone();
 			match self.build(tr, &key, Box::new(move |r| {
 				match r {
-					Ok(t) => match t.modify(tkv1.clone(), lock_time, bf1.clone()) {
+					Ok(t) => match t.modify(tkv1.clone(), lock_time, readonly, bf1.clone()) {
 						Some(r) => handle_result(r, &tr2, len, &c2, &cb2),
 						_ => ()
 					},
@@ -571,7 +695,7 @@ impl Tx {
 				}
 			})) {
 				Some(r) => match r {
-					Ok(t) => match self.handle_result(&count, len, t.modify(tkv, lock_time, bf.clone())) {
+					Ok(t) => match self.handle_result(&count, len, t.modify(tkv, lock_time, readonly, bf.clone())) {
 						None => (),
 						rr => return rr
 					}

@@ -43,8 +43,8 @@ pub trait Txn {
 
 // 每个表的事务
 pub trait TabTxn : Txn{
-	// 键锁，key可以不存在，根据lock_time的值决定是锁还是解锁
-	fn key_lock(&self, arr: Arc<Vec<TabKV>>, lock_time: usize, cb: TxCallback) -> UsizeResult {
+	// 键锁，key可以不存在，根据lock_time的值，大于0是锁，0为解锁。 分为读写锁，读写互斥，读锁可以共享，写锁只能有1个
+	fn key_lock(&self, arr: Arc<Vec<TabKV>>, lock_time: usize, readonly: bool, cb: TxCallback) -> UsizeResult {
 		None
 	}
 	// 查询
@@ -52,12 +52,13 @@ pub trait TabTxn : Txn{
 		&self,
 		arr: Arc<Vec<TabKV>>,
 		lock_time: Option<usize>,
+		readonly: bool,
 		cb: TxQueryCallback,
 	) -> Option<DBResult<Vec<TabKV>>> {
 		None
 	}
-	// 修改，插入、删除及更新
-	fn modify(&self, arr: Arc<Vec<TabKV>>, lock_time: Option<usize>, cb: TxCallback) -> UsizeResult {
+	// 修改，插入、删除及更新。
+	fn modify(&self, arr: Arc<Vec<TabKV>>, lock_time: Option<usize>, readonly: bool, cb: TxCallback) -> UsizeResult {
 		None
 	}
 	// 迭代
@@ -147,8 +148,10 @@ pub enum TxState {
 	PreparFail,
 	Committing,
 	Commited,
+	CommitFail,
 	Rollbacking,
 	Rollbacked,
+	RollbackFail,
 }
 
 /**
