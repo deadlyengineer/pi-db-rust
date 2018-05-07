@@ -92,7 +92,7 @@ impl Tr {
 	pub fn commit(&mut self, cb: TxCallback) -> UsizeResult {
 		let mut t = self.0.lock().unwrap();
 		match t.state {
-			TxState::PreparOk => t.prepare(self, cb),
+			TxState::PreparOk => t.commit(self, cb),
 			_ => Some(Err(String::from("InvalidState"))),
 		}
 	}
@@ -307,7 +307,7 @@ impl Manager {
 			}
 		}
 		// 然后检查数据表是否被修改
-		if self.tabs.is_modify(&tx.old_tabs) {
+		if !self.tabs.ptr_eq(&tx.old_tabs) {
 			// 如果被修改，则检查是否有冲突
 			// TODO 暂时没有考虑重命名的情况
 			for name in tx.meta_names.iter() {
@@ -332,7 +332,7 @@ impl Manager {
 	// 元信息的提交
 	fn commit(&mut self, id: &Guid) {
 		match self.prepare.remove(id) {
-			Some((tabs, old_tabs, _, _, _)) => if self.tabs.is_modify(&old_tabs) {
+			Some((tabs, old_tabs, _, _, _)) => if !self.tabs.ptr_eq(&old_tabs) {
 				// 检查数据表是否被修改， 如果没有修改，则可以直接替换根节点
 				self.tabs = tabs;
 			}else{
