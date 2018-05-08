@@ -17,3 +17,4 @@ extern crate fnv;
 
 pub mod db;
 pub mod mgr;
+pub mod memery_db;
