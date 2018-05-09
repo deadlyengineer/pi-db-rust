@@ -7,4 +7,3 @@ authors = ["zmythleo <zmythleo@gmail.com>"]
 pi_lib = { path = "../pi_lib" }
 fnv = "1.0.3"
 parking_lot = {version = "0.5", features = ["nightly"]}
-time = "0.1"

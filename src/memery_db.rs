@@ -4,6 +4,8 @@ use pi_lib::sbtree::{Tree, new};
 use pi_lib::atom::{Atom};
 use pi_lib::guid::{Guid, GuidGen};
 use pi_lib::sinfo::StructInfo;
+use pi_lib::time::now_nanos;
+use pi_lib::bon::{BonBuffer, Encode, Decode};
 
 // use fnv::HashMap;
 
@@ -31,6 +33,10 @@ pub struct MemeryTab {
 	pub tab: Atom,
 }
 
+pub struct MemeryDB {
+	tabs: ArcMutexTab,
+}
+
 pub struct MemeryTxn {
 	id: Guid,
 	root: Root,
@@ -41,11 +47,11 @@ pub struct MemeryTxn {
 }
 
 pub type ArcMutexTab = Arc<Mutex<MemeryTab>>;
-pub type ArcMemeryTxn = Arc<RefCell<MemeryTxn>>;
+pub type RefMemeryTxn = RefCell<MemeryTxn>;
 
 impl MemeryTxn {
 	//开始事务
-	pub fn begin(tab: ArcMutexTab, id: &Guid) -> ArcMemeryTxn {
+	pub fn begin(tab: ArcMutexTab, id: &Guid) -> RefMemeryTxn {
 		let rwlog: Rwlog = HashMap::new();
 		let root = &tab.lock().unwrap().root;
 		let tab = MemeryTxn {
@@ -56,7 +62,7 @@ impl MemeryTxn {
 			rwlog,
 			state: TxState::Ok,
 		};
-		return Arc::new(RefCell::new(tab))
+		return RefCell::new(tab)
 	}
 	//获取数据
 	pub fn get(&mut self, key: Arc<Vec<u8>>) -> Option<Arc<Vec<u8>>> {
@@ -179,7 +185,7 @@ impl MemeryTxn {
 	}
 }
 
-impl Txn for ArcMemeryTxn {
+impl Txn for RefMemeryTxn {
 	// 获得事务的状态
 	fn get_state(&self) -> TxState {
 		self.borrow().state.clone()
@@ -224,7 +230,7 @@ impl Txn for ArcMemeryTxn {
 	}
 }
 
-impl TabTxn for ArcMemeryTxn {
+impl TabTxn for RefMemeryTxn {
 	// 键锁，key可以不存在，根据lock_time的值决定是锁还是解锁
 	fn key_lock(&self, arr: Arc<Vec<TabKV>>, lock_time: usize, readonly: bool, cb: TxCallback) -> UsizeResult {
 		None
@@ -325,7 +331,23 @@ impl Tab for ArcMutexTab {
 	}
 }
 
-impl MetaTxn for ArcMemeryTxn {
+impl MemeryDB {
+	fn new(tabName: Atom) -> Self {
+		let tree:MemeryKV = None;
+		let mut root= OrdMap::new(tree);
+		let tab = MemeryTab {
+			prepare: HashMap::new(),
+			root: root,
+			tab: tabName,
+		};
+		let tab: ArcMutexTab = Arc::new(Mutex::new(tab));
+		MemeryDB {
+			tabs: tab,
+		}
+	}
+}
+
+impl MetaTxn for RefMemeryTxn {
 	// 创建表、修改指定表的元数据
 	fn alter(
 		&self,
@@ -333,6 +355,21 @@ impl MetaTxn for ArcMemeryTxn {
 		meta: Option<Arc<StructInfo>>,
 		cb: TxCallback,
 	) -> UsizeResult {
+		let mut value;
+		match meta {
+			None => value = None,
+			Some(m) => {
+				let mut meta_buf = BonBuffer::new();
+				m.encode(&mut meta_buf);
+				value = Some(Arc::new(meta_buf.unwrap()));
+			}
+		}
+		let mut arr = Vec::new();
+		let tabName = &**tab;
+		let mut kv = TabKV::new(tab.clone(), tabName.clone().into_bytes());
+		kv.value = value;
+		arr.push(kv);
+		&self.modify(Arc::new(arr), None, false, Arc::new(|v|{}));
 		Some(Ok(1))
 	}
 	// 修改指定表的名字
@@ -346,10 +383,10 @@ impl MetaTxn for ArcMemeryTxn {
 	}
 }
 
-impl TabBuilder for ArcMutexTab {
+impl TabBuilder for MemeryDB {
 	// 列出全部的表
 	fn list(&self) -> Vec<(Atom, Arc<StructInfo>)> {
-		vec![]
+		return vec![]
 	}
 	// 打开指定的表，表必须有meta
 	fn open(
@@ -373,12 +410,18 @@ impl TabBuilder for ArcMutexTab {
 		tab: &Atom,
 		meta: &Arc<StructInfo>,
 	) -> DBResult<()> {
+		let guidGen = GuidGen::new(1, now_nanos() as u32);
+		let guid = guidGen.gen(2);
+		let mut txn = self.transaction(&guid, 10);
+		txn.alter(tab, Some(meta.clone()), Arc::new(|v|{}));
+		txn.prepare(Arc::new(|v|{}));
+		txn.commit(Arc::new(|v|{}));
 		Ok(())
 	}
 
 	// 创建一个meta事务
 	fn transaction(&self, id: &Guid, timeout: usize) -> Arc<MetaTxn> {
-		let txn = MemeryTxn::begin(self.clone(), id);
+		let txn = MemeryTxn::begin(self.tabs.clone(), id);
 		return Arc::new(txn)
 	}
 }
