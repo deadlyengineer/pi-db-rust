@@ -6,7 +6,7 @@ use pi_db::memery_db::{ArcMutexTab, MemeryTxn, MemeryKV, MemeryTab};
 use pi_db::db::{Txn, TabTxn, TabKV, TxIterCallback, TxQueryCallback, DBResult, MetaTxn, Tab, TabBuilder, TxCallback, TxState, Cursor, UsizeResult};
 
 use pi_lib::atom::{Atom};
-use pi_lib::ordmap::{OrdMap, ImOrdMap, Entry};
+use pi_lib::ordmap::{OrdMap, Entry};
 use pi_lib::sbtree::{Tree, new};
 use pi_lib::guid::{Guid, GuidGen};
 use pi_lib::sinfo::StructInfo;
@@ -82,7 +82,7 @@ fn test_memery_db_p() {
 	//创建事务
 	let txn = MemeryTxn::begin(tab2.clone(), &guid);
 	
-	for n in (0..1000000) {
+	for n in 0..1000000 {
 		let key = [n];
 		let v = Vec::from("vvvvvvvvvvvvvvvvvvvv");
 		assert_eq!(txn.borrow_mut().upsert(Arc::new(key.to_vec()), Arc::new(v)), Ok(()));

@@ -1,11 +1,11 @@
 
-use pi_lib::ordmap::{OrdMap, ImOrdMap, Entry};
-use pi_lib::sbtree::{Tree, new};
+use pi_lib::ordmap::{OrdMap, Entry};
+use pi_lib::sbtree::{Tree};
 use pi_lib::atom::{Atom};
 use pi_lib::guid::{Guid, GuidGen};
 use pi_lib::sinfo::StructInfo;
 use pi_lib::time::now_nanos;
-use pi_lib::bon::{BonBuffer, Encode, Decode};
+use pi_lib::bon::{BonBuffer, Encode};
 
 // use fnv::HashMap;
 
@@ -109,7 +109,7 @@ impl MemeryTxn {
 						_ => return Err(String::from("parpare conflicted rw"))
 					},
 					None => (),
-					Some(e) => {
+					Some(_e) => {
 						return Err(String::from("parpare conflicted rw2"))
 					},
 				}
@@ -191,7 +191,7 @@ impl Txn for RefMemeryTxn {
 		self.borrow().state.clone()
 	}
 	// 预提交一个事务
-	fn prepare(&self, cb: TxCallback) -> UsizeResult {
+	fn prepare(&self, _cb: TxCallback) -> UsizeResult {
 		self.borrow_mut().state = TxState::Preparing;
 		match self.borrow_mut().prepare1() {
 			Ok(()) => {
@@ -205,7 +205,7 @@ impl Txn for RefMemeryTxn {
 		}
 	}
 	// 提交一个事务
-	fn commit(&self, cb: TxCallback) -> UsizeResult {
+	fn commit(&self, _cb: TxCallback) -> UsizeResult {
 		self.borrow_mut().state = TxState::Committing;
 		let mut txn = self.borrow_mut();
 		match txn.commit1() {
@@ -217,7 +217,7 @@ impl Txn for RefMemeryTxn {
 		}
 	}
 	// 回滚一个事务
-	fn rollback(&self, cb: TxCallback) -> UsizeResult {
+	fn rollback(&self, _cb: TxCallback) -> UsizeResult {
 		self.borrow_mut().state = TxState::Rollbacking;
 		let mut txn = self.borrow_mut();
 		match txn.rollback1() {
@@ -232,19 +232,19 @@ impl Txn for RefMemeryTxn {
 
 impl TabTxn for RefMemeryTxn {
 	// 键锁，key可以不存在，根据lock_time的值决定是锁还是解锁
-	fn key_lock(&self, arr: Arc<Vec<TabKV>>, lock_time: usize, readonly: bool, cb: TxCallback) -> UsizeResult {
+	fn key_lock(&self, _arr: Arc<Vec<TabKV>>, _lock_time: usize, _readonly: bool, _cb: TxCallback) -> UsizeResult {
 		None
 	}
 	// 查询
 	fn query(
 		&self,
 		arr: Arc<Vec<TabKV>>,
-		lock_time: Option<usize>,
-		readonly: bool,
-		cb: TxQueryCallback,
+		_lock_time: Option<usize>,
+		_readonly: bool,
+		_cb: TxQueryCallback,
 	) -> Option<DBResult<Vec<TabKV>>> {
 		let mut txn = self.borrow_mut();
-		let mut valueArr = Vec::new();
+		let mut value_arr = Vec::new();
 		for tabkv in arr.iter() {
 			let mut value = None;
 			match txn.get(Arc::new(tabkv.key.clone())) {
@@ -258,7 +258,7 @@ impl TabTxn for RefMemeryTxn {
 						return Some(Err(String::from("null")))
 					},
 				}
-			valueArr.push(
+			value_arr.push(
 				TabKV{
 				tab: tabkv.tab.clone(),
 				key: tabkv.key.clone(),
@@ -267,11 +267,10 @@ impl TabTxn for RefMemeryTxn {
 				}
 			)
 		}
-		cb(Ok(valueArr));
-		None
+		Some(Ok(value_arr))
 	}
 	// 修改，插入、删除及更新
-	fn modify(&self, arr: Arc<Vec<TabKV>>, lock_time: Option<usize>, readonly: bool, cb: TxCallback) -> UsizeResult {
+	fn modify(&self, arr: Arc<Vec<TabKV>>, _lock_time: Option<usize>, _readonly: bool, _cb: TxCallback) -> UsizeResult {
 		let mut txn = self.borrow_mut();
 		let len = arr.len();
 		for tabkv in arr.iter() {
@@ -325,20 +324,20 @@ impl TabTxn for RefMemeryTxn {
 }
 
 impl Tab for ArcMutexTab {
-	fn transaction(&self, id: &Guid, writable: bool, timeout: usize) -> Arc<TabTxn> {
+	fn transaction(&self, id: &Guid, _writable: bool, _timeout: usize) -> Arc<TabTxn> {
 		let txn = MemeryTxn::begin(self.clone(), id);
 		return Arc::new(txn)
 	}
 }
 
 impl MemeryDB {
-	fn new(tabName: Atom) -> Self {
+	pub fn new(tab_name: Atom) -> Self {
 		let tree:MemeryKV = None;
 		let mut root= OrdMap::new(tree);
 		let tab = MemeryTab {
 			prepare: HashMap::new(),
 			root: root,
-			tab: tabName,
+			tab: tab_name,
 		};
 		let tab: ArcMutexTab = Arc::new(Mutex::new(tab));
 		MemeryDB {
@@ -353,7 +352,7 @@ impl MetaTxn for RefMemeryTxn {
 		&self,
 		tab: &Atom,
 		meta: Option<Arc<StructInfo>>,
-		cb: TxCallback,
+		_cb: TxCallback,
 	) -> UsizeResult {
 		let mut value;
 		match meta {
@@ -365,11 +364,11 @@ impl MetaTxn for RefMemeryTxn {
 			}
 		}
 		let mut arr = Vec::new();
-		let tabName = &**tab;
-		let mut kv = TabKV::new(tab.clone(), tabName.clone().into_bytes());
+		let tab_name = &**tab;
+		let mut kv = TabKV::new(tab.clone(), tab_name.clone().into_bytes());
 		kv.value = value;
 		arr.push(kv);
-		&self.modify(Arc::new(arr), None, false, Arc::new(|v|{}));
+		&self.modify(Arc::new(arr), None, false, Arc::new(|_v|{}));
 		Some(Ok(1))
 	}
 	// 修改指定表的名字
@@ -410,12 +409,12 @@ impl TabBuilder for MemeryDB {
 		tab: &Atom,
 		meta: &Arc<StructInfo>,
 	) -> DBResult<()> {
-		let guidGen = GuidGen::new(1, now_nanos() as u32);
-		let guid = guidGen.gen(2);
+		let guid_gen = GuidGen::new(1, now_nanos() as u32);
+		let guid = guid_gen.gen(2);
 		let mut txn = self.transaction(&guid, 10);
-		txn.alter(tab, Some(meta.clone()), Arc::new(|v|{}));
-		txn.prepare(Arc::new(|v|{}));
-		txn.commit(Arc::new(|v|{}));
+		txn.alter(tab, Some(meta.clone()), Arc::new(|_v|{}));
+		txn.prepare(Arc::new(|_v|{}));
+		txn.commit(Arc::new(|_v|{}));
 		Ok(())
 	}
 
