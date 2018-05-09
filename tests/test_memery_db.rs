@@ -1,21 +1,20 @@
 extern crate pi_lib;
 extern crate pi_db;
-extern crate time;
 
 use pi_db::memery_db::{ArcMutexTab, MemeryTxn, MemeryKV, MemeryTab};
 
 use pi_db::db::{Txn, TabTxn, TabKV, TxIterCallback, TxQueryCallback, DBResult, MetaTxn, Tab, TabBuilder, TxCallback, TxState, Cursor, UsizeResult};
 
 use pi_lib::atom::{Atom};
-use pi_lib::ordmap::{OrdMap, ImOrdMap, Entry};
+use pi_lib::ordmap::{OrdMap, Entry};
 use pi_lib::sbtree::{Tree, new};
 use pi_lib::guid::{Guid, GuidGen};
 use pi_lib::sinfo::StructInfo;
+use pi_lib::time::now_nanos;
 
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use std::cell::RefCell;
-use time::*;
 
 #[test]
 fn test_memery_db() {
@@ -79,11 +78,11 @@ fn test_memery_db_p() {
 
 	let tab2 = &tab;
 
-	let start = time::now();
+	let start = now_nanos();
 	//创建事务
 	let txn = MemeryTxn::begin(tab2.clone(), &guid);
 	
-	for n in (0..1000000) {
+	for n in 0..1000000 {
 		let key = [n];
 		let v = Vec::from("vvvvvvvvvvvvvvvvvvvv");
 		assert_eq!(txn.borrow_mut().upsert(Arc::new(key.to_vec()), Arc::new(v)), Ok(()));
@@ -92,7 +91,7 @@ fn test_memery_db_p() {
 	assert_eq!(txn.borrow_mut().prepare1(), Ok(()));
 	assert_eq!(txn.borrow_mut().commit1(), Ok(()));
 
-	let end = time::now();//获取结束时间
+	let end = now_nanos();//获取结束时间
     println!("done!start : {:?},end :{:?},duration:{:?}",start,end,end-start);
 }
 
@@ -113,7 +112,7 @@ fn test_memery_db_p() {
 
 // 	let tab2 = &tab;
 
-// 	// let start = time::now();
+// 	// let start = now_nanos();
 	
 // 	for n in (0..10) {
 // 		println!("test p2!!!!!!1!n:{}", n);
@@ -127,6 +126,6 @@ fn test_memery_db_p() {
 // 		assert_eq!(txn.borrow_mut().commit1(), Ok(()));
 // 	};
 	
-// 	// let end = time::now();//获取结束时间
+// 	// let end = now_nanos();//获取结束时间
 //     // println!("done!start : {:?},end :{:?},duration:{:?}",start,end,end-start);
 // }

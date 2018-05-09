@@ -1,9 +1,11 @@
 
-use pi_lib::ordmap::{OrdMap, ImOrdMap, Entry};
-use pi_lib::sbtree::{Tree, new};
+use pi_lib::ordmap::{OrdMap, Entry};
+use pi_lib::sbtree::{Tree};
 use pi_lib::atom::{Atom};
 use pi_lib::guid::{Guid, GuidGen};
 use pi_lib::sinfo::StructInfo;
+use pi_lib::time::now_nanos;
+use pi_lib::bon::{BonBuffer, Encode};
 
 // use fnv::HashMap;
 
@@ -31,6 +33,10 @@ pub struct MemeryTab {
 	pub tab: Atom,
 }
 
+pub struct MemeryDB {
+	tabs: ArcMutexTab,
+}
+
 pub struct MemeryTxn {
 	id: Guid,
 	root: Root,
@@ -41,11 +47,11 @@ pub struct MemeryTxn {
 }
 
 pub type ArcMutexTab = Arc<Mutex<MemeryTab>>;
-pub type ArcMemeryTxn = Arc<RefCell<MemeryTxn>>;
+pub type RefMemeryTxn = RefCell<MemeryTxn>;
 
 impl MemeryTxn {
 	//开始事务
-	pub fn begin(tab: ArcMutexTab, id: &Guid) -> ArcMemeryTxn {
+	pub fn begin(tab: ArcMutexTab, id: &Guid) -> RefMemeryTxn {
 		let rwlog: Rwlog = HashMap::new();
 		let root = &tab.lock().unwrap().root;
 		let tab = MemeryTxn {
@@ -56,7 +62,7 @@ impl MemeryTxn {
 			rwlog,
 			state: TxState::Ok,
 		};
-		return Arc::new(RefCell::new(tab))
+		return RefCell::new(tab)
 	}
 	//获取数据
 	pub fn get(&mut self, key: Arc<Vec<u8>>) -> Option<Arc<Vec<u8>>> {
@@ -103,7 +109,7 @@ impl MemeryTxn {
 						_ => return Err(String::from("parpare conflicted rw"))
 					},
 					None => (),
-					Some(e) => {
+					Some(_e) => {
 						return Err(String::from("parpare conflicted rw2"))
 					},
 				}
@@ -179,13 +185,13 @@ impl MemeryTxn {
 	}
 }
 
-impl Txn for ArcMemeryTxn {
+impl Txn for RefMemeryTxn {
 	// 获得事务的状态
 	fn get_state(&self) -> TxState {
 		self.borrow().state.clone()
 	}
 	// 预提交一个事务
-	fn prepare(&self, cb: TxCallback) -> UsizeResult {
+	fn prepare(&self, _cb: TxCallback) -> UsizeResult {
 		self.borrow_mut().state = TxState::Preparing;
 		match self.borrow_mut().prepare1() {
 			Ok(()) => {
@@ -199,7 +205,7 @@ impl Txn for ArcMemeryTxn {
 		}
 	}
 	// 提交一个事务
-	fn commit(&self, cb: TxCallback) -> UsizeResult {
+	fn commit(&self, _cb: TxCallback) -> UsizeResult {
 		self.borrow_mut().state = TxState::Committing;
 		let mut txn = self.borrow_mut();
 		match txn.commit1() {
@@ -211,7 +217,7 @@ impl Txn for ArcMemeryTxn {
 		}
 	}
 	// 回滚一个事务
-	fn rollback(&self, cb: TxCallback) -> UsizeResult {
+	fn rollback(&self, _cb: TxCallback) -> UsizeResult {
 		self.borrow_mut().state = TxState::Rollbacking;
 		let mut txn = self.borrow_mut();
 		match txn.rollback1() {
@@ -224,21 +230,21 @@ impl Txn for ArcMemeryTxn {
 	}
 }
 
-impl TabTxn for ArcMemeryTxn {
+impl TabTxn for RefMemeryTxn {
 	// 键锁，key可以不存在，根据lock_time的值决定是锁还是解锁
-	fn key_lock(&self, arr: Arc<Vec<TabKV>>, lock_time: usize, readonly: bool, cb: TxCallback) -> UsizeResult {
+	fn key_lock(&self, _arr: Arc<Vec<TabKV>>, _lock_time: usize, _readonly: bool, _cb: TxCallback) -> UsizeResult {
 		None
 	}
 	// 查询
 	fn query(
 		&self,
 		arr: Arc<Vec<TabKV>>,
-		lock_time: Option<usize>,
-		readonly: bool,
-		cb: TxQueryCallback,
+		_lock_time: Option<usize>,
+		_readonly: bool,
+		_cb: TxQueryCallback,
 	) -> Option<DBResult<Vec<TabKV>>> {
 		let mut txn = self.borrow_mut();
-		let mut valueArr = Vec::new();
+		let mut value_arr = Vec::new();
 		for tabkv in arr.iter() {
 			let mut value = None;
 			match txn.get(Arc::new(tabkv.key.clone())) {
@@ -252,7 +258,7 @@ impl TabTxn for ArcMemeryTxn {
 						return Some(Err(String::from("null")))
 					},
 				}
-			valueArr.push(
+			value_arr.push(
 				TabKV{
 				tab: tabkv.tab.clone(),
 				key: tabkv.key.clone(),
@@ -261,11 +267,10 @@ impl TabTxn for ArcMemeryTxn {
 				}
 			)
 		}
-		cb(Ok(valueArr));
-		None
+		Some(Ok(value_arr))
 	}
 	// 修改，插入、删除及更新
-	fn modify(&self, arr: Arc<Vec<TabKV>>, lock_time: Option<usize>, readonly: bool, cb: TxCallback) -> UsizeResult {
+	fn modify(&self, arr: Arc<Vec<TabKV>>, _lock_time: Option<usize>, _readonly: bool, _cb: TxCallback) -> UsizeResult {
 		let mut txn = self.borrow_mut();
 		let len = arr.len();
 		for tabkv in arr.iter() {
@@ -319,20 +324,51 @@ impl TabTxn for ArcMemeryTxn {
 }
 
 impl Tab for ArcMutexTab {
-	fn transaction(&self, id: &Guid, writable: bool, timeout: usize) -> Arc<TabTxn> {
+	fn transaction(&self, id: &Guid, _writable: bool, _timeout: usize) -> Arc<TabTxn> {
 		let txn = MemeryTxn::begin(self.clone(), id);
 		return Arc::new(txn)
 	}
 }
 
-impl MetaTxn for ArcMemeryTxn {
+impl MemeryDB {
+	pub fn new(tab_name: Atom) -> Self {
+		let tree:MemeryKV = None;
+		let mut root= OrdMap::new(tree);
+		let tab = MemeryTab {
+			prepare: HashMap::new(),
+			root: root,
+			tab: tab_name,
+		};
+		let tab: ArcMutexTab = Arc::new(Mutex::new(tab));
+		MemeryDB {
+			tabs: tab,
+		}
+	}
+}
+
+impl MetaTxn for RefMemeryTxn {
 	// 创建表、修改指定表的元数据
 	fn alter(
 		&self,
 		tab: &Atom,
 		meta: Option<Arc<StructInfo>>,
-		cb: TxCallback,
+		_cb: TxCallback,
 	) -> UsizeResult {
+		let mut value;
+		match meta {
+			None => value = None,
+			Some(m) => {
+				let mut meta_buf = BonBuffer::new();
+				m.encode(&mut meta_buf);
+				value = Some(Arc::new(meta_buf.unwrap()));
+			}
+		}
+		let mut arr = Vec::new();
+		let tab_name = &**tab;
+		let mut kv = TabKV::new(tab.clone(), tab_name.clone().into_bytes());
+		kv.value = value;
+		arr.push(kv);
+		&self.modify(Arc::new(arr), None, false, Arc::new(|_v|{}));
 		Some(Ok(1))
 	}
 	// 修改指定表的名字
@@ -346,10 +382,10 @@ impl MetaTxn for ArcMemeryTxn {
 	}
 }
 
-impl TabBuilder for ArcMutexTab {
+impl TabBuilder for MemeryDB {
 	// 列出全部的表
 	fn list(&self) -> Vec<(Atom, Arc<StructInfo>)> {
-		vec![]
+		return vec![]
 	}
 	// 打开指定的表，表必须有meta
 	fn open(
@@ -373,12 +409,18 @@ impl TabBuilder for ArcMutexTab {
 		tab: &Atom,
 		meta: &Arc<StructInfo>,
 	) -> DBResult<()> {
+		let guid_gen = GuidGen::new(1, now_nanos() as u32);
+		let guid = guid_gen.gen(2);
+		let mut txn = self.transaction(&guid, 10);
+		txn.alter(tab, Some(meta.clone()), Arc::new(|_v|{}));
+		txn.prepare(Arc::new(|_v|{}));
+		txn.commit(Arc::new(|_v|{}));
 		Ok(())
 	}
 
 	// 创建一个meta事务
 	fn transaction(&self, id: &Guid, timeout: usize) -> Arc<MetaTxn> {
-		let txn = MemeryTxn::begin(self.clone(), id);
+		let txn = MemeryTxn::begin(self.tabs.clone(), id);
 		return Arc::new(txn)
 	}
 }
