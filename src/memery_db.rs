@@ -192,25 +192,26 @@ impl Txn for RefMemeryTxn {
 	}
 	// 预提交一个事务
 	fn prepare(&self, _cb: TxCallback) -> UsizeResult {
-		self.borrow_mut().state = TxState::Preparing;
-		match self.borrow_mut().prepare1() {
+		let mut txn = self.borrow_mut();
+		txn.state = TxState::Preparing;
+		match txn.prepare1() {
 			Ok(()) => {
-				self.borrow_mut().state = TxState::PreparOk;
+				txn.state = TxState::PreparOk;
 				return Some(Ok(1))
 			},
 			Err(e) => {
-				self.borrow_mut().state = TxState::PreparFail;
+				txn.state = TxState::PreparFail;
 				return Some(Err(e.to_string()))
 			},
 		}
 	}
 	// 提交一个事务
 	fn commit(&self, _cb: TxCallback) -> UsizeResult {
-		self.borrow_mut().state = TxState::Committing;
 		let mut txn = self.borrow_mut();
+		txn.state = TxState::Committing;
 		match txn.commit1() {
 			Ok(()) => {
-				self.borrow_mut().state = TxState::Commited;
+				txn.state = TxState::Commited;
 				return Some(Ok(1))
 			},
 			Err(e) => return Some(Err(e.to_string())),
@@ -218,11 +219,11 @@ impl Txn for RefMemeryTxn {
 	}
 	// 回滚一个事务
 	fn rollback(&self, _cb: TxCallback) -> UsizeResult {
-		self.borrow_mut().state = TxState::Rollbacking;
 		let mut txn = self.borrow_mut();
+		txn.state = TxState::Rollbacking;
 		match txn.rollback1() {
 			Ok(()) => {
-				self.borrow_mut().state = TxState::Rollbacked;
+				txn.state = TxState::Rollbacked;
 				return Some(Ok(1))
 			},
 			Err(e) => return Some(Err(e.to_string())),
