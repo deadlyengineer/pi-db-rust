@@ -177,7 +177,7 @@ impl TabKV {
 }
 pub trait Cursor {
 	fn state(&self) -> DBResult<bool>;
-	fn key(&self) -> &[u8];
+	fn key(&self) -> Arc<Vec<u8>>;
 	fn value(&self) -> Option<Arc<Vec<u8>>>;
 	fn next(&mut self);
 }
