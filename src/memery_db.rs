@@ -172,7 +172,8 @@ impl MemeryTxn {
 			//删除预提交
 			tab.prepare.remove(&self.id);
 		} else {
-			tab.root.cxchg(&mut self.old, &mut self.root);
+			// tab.root.cxchg(&mut self.old, &mut self.root);
+			tab.root = self.root.clone();
 			//删除预提交
 			tab.prepare.remove(&self.id);
 		}
@@ -410,12 +411,12 @@ impl TabBuilder for MemeryDB {
 		tab: &Atom,
 		meta: &Arc<StructInfo>,
 	) -> DBResult<()> {
-		let guid_gen = GuidGen::new(1, now_nanos() as u32);
-		let guid = guid_gen.gen(2);
-		let txn = self.transaction(&guid, 10);
-		txn.alter(tab, Some(meta.clone()), Arc::new(|_v|{}));
-		txn.prepare(Arc::new(|_v|{}));
-		txn.commit(Arc::new(|_v|{}));
+		// let guid_gen = GuidGen::new(1, now_nanos() as u32);
+		// let guid = guid_gen.gen(2);
+		// let mut txn = self.transaction(&guid, 10);
+		// txn.alter(tab, Some(meta.clone()), Arc::new(|_v|{}));
+		// txn.prepare(Arc::new(|_v|{}));
+		// txn.commit(Arc::new(|_v|{}));
 		Ok(())
 	}
 
