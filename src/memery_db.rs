@@ -24,7 +24,7 @@ pub type MemeryResult<T> = Result<T, String>;
 #[derive(Clone, Debug)]
 pub enum Rwlogv {
 	Read,
-	write(Option<Arc<Vec<u8>>>),
+	Write(Option<Arc<Vec<u8>>>),
 }
 
 pub struct MemeryTab {
@@ -83,13 +83,13 @@ impl MemeryTxn {
 	//插入/修改数据
 	pub fn upsert(&mut self, key: Arc<Vec<u8>>, value: Arc<Vec<u8>>) -> MemeryResult<()> {
 		self.root.upsert(key.clone(), value.clone(), false);
-		&mut self.rwlog.insert(key.clone(), Rwlogv::write(Some(value.clone())));
+		&mut self.rwlog.insert(key.clone(), Rwlogv::Write(Some(value.clone())));
 		Ok(())
 	}
 	//删除
 	pub fn delete(&mut self, key: Arc<Vec<u8>>) -> MemeryResult<()> {
 		self.root.delete(&key, false);
-		self.rwlog.insert(key.clone(), Rwlogv::write(None));
+		self.rwlog.insert(key.clone(), Rwlogv::Write(None));
 		Ok(())
 	}
 	//迭代
@@ -158,11 +158,11 @@ impl MemeryTxn {
 			}
 			for (k, rw_v) in write {
 				match rw_v {
-					Rwlogv::write(None) => {
+					Rwlogv::Write(None) => {
 						tab.root.delete(&k, false);
 						()
 					},
-					Rwlogv::write(Some(v)) => {
+					Rwlogv::Write(Some(v)) => {
 						tab.root.upsert(k, v.clone(), false);
 						()
 					},
@@ -259,7 +259,7 @@ impl TabTxn for RefMemeryTxn {
 					{
 						return Some(Err(String::from("null")))
 					},
-				}
+			}
 			value_arr.push(
 				TabKV{
 				tab: tabkv.tab.clone(),
@@ -299,28 +299,28 @@ impl TabTxn for RefMemeryTxn {
 	// 迭代
 	fn iter(
 		&self,
-		tab: &Atom,
-		key: Option<Vec<u8>>,
-		descending: bool,
-		key_only: bool,
-		filter: String,
-		cb: TxIterCallback,
+		_tab: &Atom,
+		_key: Option<Vec<u8>>,
+		_descending: bool,
+		_key_only: bool,
+		_filter: String,
+		_cb: TxIterCallback,
 	) -> Option<DBResult<Box<Cursor>>> {
         None
 	}
 	// 索引迭代
 	fn index(
 		&self,
-		tab: &Atom,
-		key: Option<Vec<u8>>,
-		descending: bool,
-		filter: String,
-		cb: TxIterCallback,
+		_tab: &Atom,
+		_key: Option<Vec<u8>>,
+		_descending: bool,
+		_filter: String,
+		_cb: TxIterCallback,
 	) -> Option<DBResult<Box<Cursor>>> {
 		None
 	}
 	// 表的大小
-	fn tab_size(&self, cb: TxCallback) -> UsizeResult {
+	fn tab_size(&self, _cb: TxCallback) -> UsizeResult {
 		None
 	}
 }
@@ -335,7 +335,7 @@ impl Tab for ArcMutexTab {
 impl MemeryDB {
 	pub fn new(tab_name: Atom) -> Self {
 		let tree:MemeryKV = None;
-		let mut root= OrdMap::new(tree);
+		let root= OrdMap::new(tree);
 		let tab = MemeryTab {
 			prepare: HashMap::new(),
 			root: root,
@@ -356,7 +356,7 @@ impl MetaTxn for RefMemeryTxn {
 		meta: Option<Arc<StructInfo>>,
 		_cb: TxCallback,
 	) -> UsizeResult {
-		let mut value;
+		let value;
 		match meta {
 			None => value = None,
 			Some(m) => {
@@ -376,9 +376,9 @@ impl MetaTxn for RefMemeryTxn {
 	// 修改指定表的名字
 	fn rename(
 		&self,
-		tab: &Atom,
-		new_name: &Atom,
-		cb: TxCallback,
+		_tab: &Atom,
+		_new_name: &Atom,
+		_cb: TxCallback,
 	) -> UsizeResult {
 		Some(Ok(1))
 	}
@@ -393,10 +393,10 @@ impl TabBuilder for MemeryDB {
 	fn open(
 		&self,
 		tab: &Atom,
-		cb: Box<Fn(DBResult<Arc<Tab>>)>,
+		_cb: Box<Fn(DBResult<Arc<Tab>>)>,
 	) -> Option<DBResult<Arc<Tab>>> {
 		let tree:MemeryKV = None;
-		let mut root= OrdMap::new(tree);
+		let root= OrdMap::new(tree);
 		let tab = MemeryTab {
 			prepare: HashMap::new(),
 			root: root,
@@ -421,7 +421,7 @@ impl TabBuilder for MemeryDB {
 	}
 
 	// 创建一个meta事务
-	fn transaction(&self, id: &Guid, timeout: usize) -> Arc<MetaTxn> {
+	fn transaction(&self, id: &Guid, _timeout: usize) -> Arc<MetaTxn> {
 		let txn = MemeryTxn::begin(self.tabs.clone(), id);
 		return Arc::new(txn)
 	}

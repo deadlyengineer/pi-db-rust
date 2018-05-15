@@ -15,6 +15,13 @@ use pi_lib::guid::{Guid, GuidGen};
 
 use db::{UsizeResult, Cursor, DBResult, TabKV, TxCallback, TxIterCallback, TxQueryCallback, TxState, MetaTxn, Tab, TabTxn, TabBuilder};
 
+#[cfg(test)]
+use memery_db;
+#[cfg(test)]
+use pi_lib::bon::{BonBuffer, Encode, Decode};
+#[cfg(test)]
+use std::collections::HashMap;
+
 pub type TxHandler = Box<FnMut(&mut Tr)>;
 
 // 表、事务管理器
@@ -40,9 +47,9 @@ impl Mgr {
 	}
 
 	// 读事务，无限尝试直到超时，默认10秒
-	pub fn read(&self, tx: TxHandler, timeout: usize, cb: TxCallback) {}
+	//pub fn read(&self, tx: TxHandler, timeout: usize, cb: TxCallback) {}
 	// 写事务，无限尝试直到超时，默认10秒
-	pub fn write(&self, tx: TxHandler, timeout: usize, cb: TxCallback) {}
+	//pub fn write(&self, tx: TxHandler, timeout: usize, cb: TxCallback) {}
 	// 创建事务
 	pub fn transaction(&self, writable: bool, timeout: usize) -> Tr {
 		let id = (self.0).1.gen(0);
@@ -81,7 +88,7 @@ impl Tr {
 		self.0.lock().unwrap().state.clone()
 	}
 	// 预提交一个事务
-	pub fn prepare(&mut self, cb: TxCallback) -> UsizeResult {
+	pub fn prepare(&self, cb: TxCallback) -> UsizeResult {
 		let mut t = self.0.lock().unwrap();
 		match t.state {
 			TxState::Ok => t.prepare(self, cb),
@@ -89,7 +96,7 @@ impl Tr {
 		}
 	}
 	// 提交一个事务
-	pub fn commit(&mut self, cb: TxCallback) -> UsizeResult {
+	pub fn commit(&self, cb: TxCallback) -> UsizeResult {
 		let mut t = self.0.lock().unwrap();
 		match t.state {
 			TxState::PreparOk => t.commit(self, cb),
@@ -97,7 +104,7 @@ impl Tr {
 		}
 	}
 	// 回滚一个事务
-	pub fn rollback(&mut self, cb: TxCallback) -> UsizeResult {
+	pub fn rollback(&self, cb: TxCallback) -> UsizeResult {
 		let mut t = self.0.lock().unwrap();
 		match t.state {
 			TxState::Committing|TxState::Commited|TxState::CommitFail|TxState::Rollbacking|TxState::Rollbacked|TxState::RollbackFail =>
@@ -106,7 +113,7 @@ impl Tr {
 		}
 	}
 	// 锁
-	pub fn key_lock(&mut self, arr: Vec<TabKV>, lock_time: usize, readonly: bool, cb: TxCallback) -> UsizeResult {
+	pub fn key_lock(&self, arr: Vec<TabKV>, lock_time: usize, readonly: bool, cb: TxCallback) -> UsizeResult {
 		let mut t = self.0.lock().unwrap();
 		match t.state {
 			TxState::Ok => t.key_lock(self, arr, lock_time, readonly, cb),
@@ -115,8 +122,8 @@ impl Tr {
 	}
 	// 查询
 	pub fn query(
-		&mut self,
-		mut arr: Vec<TabKV>,
+		&self,
+		arr: Vec<TabKV>,
 		lock_time: Option<usize>,
 		readonly: bool,
 		cb: TxQueryCallback,
@@ -128,7 +135,7 @@ impl Tr {
 		}
 	}
 	// 修改，插入、删除及更新
-	pub fn modify(&mut self, arr: Vec<TabKV>, lock_time: Option<usize>, readonly: bool, cb: TxCallback) -> UsizeResult {
+	pub fn modify(&self, arr: Vec<TabKV>, lock_time: Option<usize>, readonly: bool, cb: TxCallback) -> UsizeResult {
 		let mut t = self.0.lock().unwrap();
 		if !t.writable {
 			return Some(Err(String::from("Readonly")))
@@ -140,7 +147,7 @@ impl Tr {
 	}
 	// 范围查询
 	pub fn range(
-		&mut self,
+		&self,
 		tab: &Atom,
 		min_key:Vec<u8>,
 		max_key:Vec<u8>,
@@ -151,7 +158,7 @@ impl Tr {
 	}
 	// 迭代
 	pub fn iter(
-		&mut self,
+		&self,
 		tab: &Atom,
 		key: Option<Vec<u8>>,
 		descending: bool,
@@ -163,7 +170,7 @@ impl Tr {
 	}
 	// 索引迭代
 	pub fn index(
-		&mut self,
+		&self,
 		tab: &Atom,
 		key: Option<Vec<u8>>,
 		descending: bool,
@@ -189,7 +196,7 @@ impl Tr {
 		}
 	}
 	// 创建、修改或删除表
-	pub fn alter(&mut self, tab: &Atom, meta: Option<Arc<StructInfo>>, cb: TxCallback) -> UsizeResult {
+	pub fn alter(&self, tab: &Atom, meta: Option<Arc<StructInfo>>, cb: TxCallback) -> UsizeResult {
 		let mut t = self.0.lock().unwrap();
 		if !t.writable {
 			return Some(Err(String::from("Readonly")))
@@ -200,7 +207,7 @@ impl Tr {
 		}
 	}
 	// 表改名
-	pub fn rename(&mut self, tab: &Atom, new_name: Atom, cb: TxCallback) -> UsizeResult {
+	pub fn rename(&self, tab: &Atom, new_name: Atom, cb: TxCallback) -> UsizeResult {
 		let mut t = self.0.lock().unwrap();
 		if !t.writable {
 			return Some(Err(String::from("Readonly")))
@@ -332,7 +339,7 @@ impl Manager {
 	// 元信息的提交
 	fn commit(&mut self, id: &Guid) {
 		match self.prepare.remove(id) {
-			Some((tabs, old_tabs, _, _, _)) => if !self.tabs.ptr_eq(&old_tabs) {
+			Some((tabs, old_tabs, _, _, _)) => if self.tabs.ptr_eq(&old_tabs) {
 				// 检查数据表是否被修改， 如果没有修改，则可以直接替换根节点
 				self.tabs = tabs;
 			}else{
@@ -434,6 +441,7 @@ impl Tx {
 				_ => ()
 			}
 		}
+
 		//处理tab alter的预提交
 		for val in self.meta_txns.values_mut() {
 			match val.prepare(bf.clone()) {
@@ -751,7 +759,10 @@ impl Tx {
 					Some(class) => match self.builders.get(class) {
 						Some(b) => {
 							match b.check(&tab, sinfo) { // 检查
-								Ok(_) => b,
+								Ok(_) => {
+									self.tabs.upsert(tab.clone(), TabInfo::new(b.clone(), sinfo.clone()), false);
+									b
+								},
 								Err(s) => return Some(Err(s))
 							}
 						},
@@ -765,6 +776,7 @@ impl Tx {
 				_ => return Some(Ok(0))
 			}
 		};
+		
 		// 先查找rename_logs，获取该表的源名字及版本，然后修改alter_logs
 		let tab_ver = match self.rename_logs.get(&tab) {
 			Some(v) => v.clone(),
@@ -842,7 +854,7 @@ impl Tx {
 				},
 				_ => {
 					self.state = TxState::Fail;
-					return Some(Err(String::from("TabNotFound")))
+					return Some(Err(String::from("TabNotFound")));
 				}
 			}
 		};
@@ -971,3 +983,267 @@ fn handle_fn(tr: Tr, tab_name: Atom, id: Guid, writable: bool, timeout: usize, c
 		}
 	})
 }
+
+#[cfg(test)]
+#[derive(Debug)]
+struct Player{
+	name: String,
+	id: u32,
+}
+
+#[cfg(test)]
+impl Encode for Player{
+	fn encode(&self, bb: &mut BonBuffer){
+		self.name.encode(bb);
+		self.id.encode(bb);
+	}
+}
+
+#[cfg(test)]
+impl Decode for Player{
+	fn decode(bb: &mut BonBuffer) -> Self{
+		Player{
+			name: String::decode(bb),
+			id: u32::decode(bb),
+		}
+	}
+}
+
+#[test]
+fn test_memery_db_mgr(){
+
+	let mgr = Mgr::new(GuidGen::new(1,1));
+	mgr.register_builder(&Atom::from("memery"), Arc::new(memery_db::MemeryDB::new(Atom::from("memery"))));
+	let mgr = Arc::new(mgr);
+
+	let tr = mgr.transaction(true, 1000);
+	let tr1 = tr.clone();
+	let mut sinfo = StructInfo::new(Atom::from("Player"), 555555555555);
+	let mut m = HashMap::new();
+	m.insert(Atom::from("class"), Atom::from("memery"));
+	sinfo.notes = Some(m);
+	let alter_back = Arc::new(move|r: DBResult<usize>|{
+		println!("alter: {:?}", r);
+		
+		match tr1.prepare(Arc::new(|r|{println!("prepare_alter:{:?}", r)})){
+			Some(r) => println!("prepare_alter:{:?}", r),
+			_ => println!("prepare_alter:fail"),
+		};
+		match tr1.commit(Arc::new(|r|{println!("commit_alter:{:?}", r)})){
+			Some(r) => println!("commit_alter:{:?}", r),
+			_ => println!("commit_alter:fail"),
+		};
+		println!("alter_succsess");
+		let mgr1 = mgr.clone();
+		let write = move||{
+			let mgr2 = mgr1.clone();
+			let read = move||{
+				let tr = mgr2.transaction(false, 1000);
+				let tr1 = tr.clone();
+				let mut arr = Vec::new();
+				let t1 = TabKV{
+					tab: Atom::from("Player"),
+					key: vec![5u8],
+					index: 0,
+					value: None,
+				};
+				arr.push(t1);
+
+				let read_back = Arc::new(move|r: DBResult<Vec<TabKV>>|{
+					match r {
+						Ok(mut v) => {
+							println!("read:ok");
+							for elem in v.iter_mut(){
+								match elem.value {
+									Some(ref mut v) => {
+										let mut buf = BonBuffer::with_bytes(Arc::make_mut(v).clone(), None, None);
+										let p = Player::decode(&mut buf);
+										println!("{:?}", p);
+									},
+									None => (),
+								}
+							}
+						},
+						Err(v) => println!("read:fail, {}", v),
+					}
+					//println!("read: {:?}", r);
+					match tr1.prepare(Arc::new(|r|{println!("prepare_read:{:?}", r)})){
+						Some(r) => println!("prepare_read:{:?}", r),
+						_ => println!("prepare_read:fail"),
+					};
+					match tr1.commit(Arc::new(|r|{println!("commit_read:{:?}", r)})){
+						Some(r) => println!("commit_read:{:?}", r),
+						_ => println!("commit_read:fail"),
+					};
+					//println!("succsess:{}", arr.len());
+				});
+
+				let r = tr.query(arr, Some(100), true, read_back.clone());
+				if r.is_some(){
+					read_back(r.unwrap());
+				}
+			};
+
+			let tr = mgr1.transaction(true, 1000);
+			let tr1 = tr.clone();
+			let p = Player{
+				name: String::from("chuanyan"),
+				id:5
+			};
+			let mut bonbuf = BonBuffer::new();
+			let bon = p.encode(&mut bonbuf);
+			let buf = bonbuf.unwrap();
+
+			let mut arr = Vec::new();
+			let t1 = TabKV{
+				tab: Atom::from("Player"),
+				key: vec![5u8],
+				index: 0,
+				value: Some(Arc::new(buf)),
+			};
+			arr.push(t1);
+
+			let write_back = Arc::new(move|r|{
+				println!("write: {:?}", r);
+				match tr1.prepare(Arc::new(|r|{println!("prepare_write:{:?}", r)})){
+					Some(r) => println!("prepare_write:{:?}", r),
+					_ => println!("prepare_write:fail"),
+				};
+				match tr1.commit(Arc::new(|r|{println!("commit_write:{:?}", r)})){
+					Some(r) => println!("commit_write:{:?}", r),
+					_ => println!("commit_write:fail"),
+				};
+				&read();
+			});
+			let r = tr.modify(arr, Some(100), false, write_back.clone());
+			if r.is_some(){
+				write_back(r.unwrap());
+			}
+		};
+		write();
+	});
+	let r = tr.alter(&Atom::from("Player"), Some(Arc::new(sinfo)), alter_back.clone());
+	if r.is_some(){
+		alter_back(r.unwrap());
+	}
+}
+
+// #[test]
+// fn test_file_db_mgr(){
+
+// 	let mgr = Mgr::new(GuidGen::new(1,1));
+// 	mgr.register_builder(&Atom::from("file"), Arc::new(memery_db::MemeryDB::new(Atom::from("file"))));
+// 	let mgr = Arc::new(mgr);
+
+// 	let tr = mgr.transaction(true, 1000);
+// 	let tr1 = tr.clone();
+// 	let mut sinfo = StructInfo::new(Atom::from("Player"), 555555555555);
+// 	let mut m = HashMap::new();
+// 	m.insert(Atom::from("class"), Atom::from("memery"));
+// 	sinfo.notes = Some(m);
+// 	let alter_back = Arc::new(move|r: DBResult<usize>|{
+// 		println!("alter: {:?}", r);
+		
+// 		match tr1.prepare(Arc::new(|r|{println!("prepare_alter:{:?}", r)})){
+// 			Some(r) => println!("prepare_alter:{:?}", r),
+// 			_ => println!("prepare_alter:fail"),
+// 		};
+// 		match tr1.commit(Arc::new(|r|{println!("commit_alter:{:?}", r)})){
+// 			Some(r) => println!("commit_alter:{:?}", r),
+// 			_ => println!("commit_alter:fail"),
+// 		};
+// 		println!("alter_succsess");
+// 		let mgr1 = mgr.clone();
+// 		let write = move||{
+// 			let mgr2 = mgr1.clone();
+// 			let read = move||{
+// 				let tr = mgr2.transaction(false, 1000);
+// 				let tr1 = tr.clone();
+// 				let mut arr = Vec::new();
+// 				let t1 = TabKV{
+// 					tab: Atom::from("Player"),
+// 					key: vec![5u8],
+// 					index: 0,
+// 					value: None,
+// 				};
+// 				arr.push(t1);
+
+// 				let read_back = Arc::new(move|r: DBResult<Vec<TabKV>>|{
+// 					match r {
+// 						Ok(mut v) => {
+// 							println!("read:ok");
+// 							for elem in v.iter_mut(){
+// 								match elem.value {
+// 									Some(ref mut v) => {
+// 										let mut buf = BonBuffer::with_bytes(Arc::make_mut(v).clone(), None, None);
+// 										let p = Player::decode(&mut buf);
+// 										println!("{:?}", p);
+// 									},
+// 									None => (),
+// 								}
+// 							}
+// 						},
+// 						Err(v) => println!("read:fail, {}", v),
+// 					}
+// 					//println!("read: {:?}", r);
+// 					match tr1.prepare(Arc::new(|r|{println!("prepare_read:{:?}", r)})){
+// 						Some(r) => println!("prepare_read:{:?}", r),
+// 						_ => println!("prepare_read:fail"),
+// 					};
+// 					match tr1.commit(Arc::new(|r|{println!("commit_read:{:?}", r)})){
+// 						Some(r) => println!("commit_read:{:?}", r),
+// 						_ => println!("commit_read:fail"),
+// 					};
+// 					//println!("succsess:{}", arr.len());
+// 				});
+
+// 				let r = tr.query(arr, Some(100), true, read_back.clone());
+// 				if r.is_some(){
+// 					read_back(r.unwrap());
+// 				}
+// 			};
+
+// 			let tr = mgr1.transaction(true, 1000);
+// 			let tr1 = tr.clone();
+// 			let p = Player{
+// 				name: String::from("chuanyan"),
+// 				id:5
+// 			};
+// 			let mut bonbuf = BonBuffer::new();
+// 			let bon = p.encode(&mut bonbuf);
+// 			let buf = bonbuf.unwrap();
+
+// 			let mut arr = Vec::new();
+// 			let t1 = TabKV{
+// 				tab: Atom::from("Player"),
+// 				key: vec![5u8],
+// 				index: 0,
+// 				value: Some(Arc::new(buf)),
+// 			};
+// 			arr.push(t1);
+
+// 			let write_back = Arc::new(move|r|{
+// 				println!("write: {:?}", r);
+// 				match tr1.prepare(Arc::new(|r|{println!("prepare_write:{:?}", r)})){
+// 					Some(r) => println!("prepare_write:{:?}", r),
+// 					_ => println!("prepare_write:fail"),
+// 				};
+// 				match tr1.commit(Arc::new(|r|{println!("commit_write:{:?}", r)})){
+// 					Some(r) => println!("commit_write:{:?}", r),
+// 					_ => println!("commit_write:fail"),
+// 				};
+// 				&read();
+// 			});
+// 			let r = tr.modify(arr, Some(100), false, write_back.clone());
+// 			if r.is_some(){
+// 				write_back(r.unwrap());
+// 			}
+// 		};
+// 		write();
+// 	});
+// 	let r = tr.alter(&Atom::from("Player"), Some(Arc::new(sinfo)), alter_back.clone());
+// 	if r.is_some(){
+// 		alter_back(r.unwrap());
+// 	}
+// }
+
