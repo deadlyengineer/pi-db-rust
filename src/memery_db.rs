@@ -247,7 +247,7 @@ impl TabTxn for RefMemeryTxn {
 		let mut value_arr = Vec::new();
 		for tabkv in arr.iter() {
 			let mut value = None;
-			match txn.get(Arc::new(tabkv.key.clone())) {
+			match txn.get(tabkv.key.clone()) {
 				Some(v) =>
 					{
 						value = Some(v);
@@ -275,7 +275,7 @@ impl TabTxn for RefMemeryTxn {
 		let len = arr.len();
 		for tabkv in arr.iter() {
 			if tabkv.value == None {
-				match txn.delete(Arc::new(tabkv.key.clone())) {
+				match txn.delete(tabkv.key.clone()) {
 				Ok(_) => (),
 				Err(e) => 
 					{
@@ -283,7 +283,7 @@ impl TabTxn for RefMemeryTxn {
 					},
 				};
 			} else {
-				match txn.upsert(Arc::new(tabkv.key.clone()), tabkv.value.clone().unwrap()) {
+				match txn.upsert(tabkv.key.clone(), tabkv.value.clone().unwrap()) {
 				Ok(_) => (),
 				Err(e) =>
 					{
@@ -360,12 +360,12 @@ impl MetaTxn for RefMemeryTxn {
 			Some(m) => {
 				let mut meta_buf = BonBuffer::new();
 				m.encode(&mut meta_buf);
-				value = Some(Arc::new(meta_buf.unwrap()));
+				value = Some(Arc::new(Vec::new()));
 			}
 		}
 		let mut arr = Vec::new();
 		let tab_name = &**tab;
-		let mut kv = TabKV::new(tab.clone(), tab_name.clone().into_bytes());
+		let mut kv = TabKV::new(tab.clone(), Arc::new(tab_name.clone().into_bytes()));
 		kv.value = value;
 		arr.push(kv);
 		&self.modify(Arc::new(arr), None, false, Arc::new(|_v|{}));
@@ -419,7 +419,7 @@ impl TabBuilder for MemeryDB {
 	}
 
 	// 创建一个meta事务
-	fn transaction(&self, id: &Guid, timeout: usize) -> Arc<MetaTxn> {
+	fn meta_txn(&self, id: &Guid, timeout: usize) -> Arc<MetaTxn> {
 		let txn = MemeryTxn::begin(self.tabs.clone(), id);
 		return Arc::new(txn)
 	}
