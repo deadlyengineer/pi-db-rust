@@ -23,7 +23,7 @@ pub struct TabLog {
 	rename_logs: FnvHashMap<Atom, (Atom, usize)>, // 新名字->(源名字, 版本号)
 }
 impl TabLog {
-	fn new(map: &OrdMap<Tree<Atom, TabInfo>>) -> Self {
+	pub fn new(map: &OrdMap<Tree<Atom, TabInfo>>) -> Self {
 		TabLog {
 			map: map.clone(),
 			old_map: map.clone(),
