@@ -3,7 +3,7 @@ extern crate pi_db;
 
 use pi_db::memery_db::{ArcMutexTab, MemeryTxn, MemeryKV, MemeryTab};
 
-use pi_db::db::{Txn, TabTxn, TabKV, TxIterCallback, TxQueryCallback, DBResult, MetaTxn, Tab, TabBuilder, TxCallback, TxState, Cursor, UsizeResult};
+use pi_db::db::{Txn, TabTxn, TabKV, TxIterCallback, TxQueryCallback, SResult, MetaTxn, Tab, Ware, TxCallback, TxState, Cursor, DBResult};
 
 use pi_lib::atom::{Atom};
 use pi_lib::ordmap::{OrdMap, Entry};
@@ -33,7 +33,7 @@ fn test_memery_db() {
 	let tab2 = &tab;
 
 	//创建事务
-	let txn = MemeryTxn::begin(tab2.clone(), &guid);
+	let txn = MemeryTxn::new(tab2.clone(), &guid);
 	assert_eq!(txn.borrow_mut().upsert(Arc::new(b"1".to_vec()), Arc::new(b"v1".to_vec())), Ok(()));
 	assert_eq!(txn.borrow_mut().get(Arc::new(b"1".to_vec())), Some(Arc::new(b"v1".to_vec())));
 	assert_eq!(txn.borrow_mut().get(Arc::new(b"1".to_vec())), Some(Arc::new(b"v1".to_vec())));
@@ -41,21 +41,21 @@ fn test_memery_db() {
 	assert_eq!(txn.borrow_mut().commit1(), Ok(()));
 
 	//创建事务(添加key:2 并回滚)
-	let txn = MemeryTxn::begin(tab2.clone(), &guid);
+	let txn = MemeryTxn::new(tab2.clone(), &guid);
 	assert_eq!(txn.borrow_mut().upsert(Arc::new(b"2".to_vec()), Arc::new(b"v2".to_vec())), Ok(()));
 	assert_eq!(txn.borrow_mut().get(Arc::new(b"1".to_vec())), Some(Arc::new(b"v1".to_vec())));
 	assert_eq!(txn.borrow_mut().prepare1(), Ok(()));
 	assert_eq!(txn.borrow_mut().rollback1(), Ok(()));
 
 	//创建事务
-	let txn = MemeryTxn::begin(tab2.clone(), &guid);
+	let txn = MemeryTxn::new(tab2.clone(), &guid);
 	assert_eq!(txn.borrow_mut().get(Arc::new(b"1".to_vec())), Some(Arc::new(b"v1".to_vec())));
 	assert_eq!(txn.borrow_mut().get(Arc::new(b"2".to_vec())), None);
 	assert_eq!(txn.borrow_mut().prepare1(), Ok(()));
 	assert_eq!(txn.borrow_mut().commit1(), Ok(()));
 
 	//创建事务
-	let txn = MemeryTxn::begin(tab2.clone(), &guid);
+	let txn = MemeryTxn::new(tab2.clone(), &guid);
 	assert_eq!(txn.borrow_mut().get(Arc::new(b"1".to_vec())), Some(Arc::new(b"v1".to_vec())));
 	assert_eq!(txn.borrow_mut().get(Arc::new(b"2".to_vec())), None);
 	assert_eq!(txn.borrow_mut().prepare1(), Ok(()));
@@ -80,7 +80,7 @@ fn test_memery_db_p() {
 
 	let start = now_nanos();
 	//创建事务
-	let txn = MemeryTxn::begin(tab2.clone(), &guid);
+	let txn = MemeryTxn::new(tab2.clone(), &guid);
 	
 	for n in 0..1000000 {
 		let key = [n];
@@ -95,37 +95,37 @@ fn test_memery_db_p() {
     println!("done!start : {:?},end :{:?},duration:{:?}",start,end,end-start);
 }
 
-// #[test]
-// fn test_memery_db_p2() {
-// 	println!("test p2!!!!!!!");
-// 	//打开表
-// 	let tree:MemeryKV = None;
-// 	let mut root= OrdMap::new(tree);
-// 	let tab = MemeryTab {
-// 		prepare: HashMap::new(),
-// 		root: root,
-// 		tab: Atom::from("test3"),
-// 	};
-// 	let tab: ArcMutexTab = Arc::new(Mutex::new(tab));
-// 	let guidGen = GuidGen::new(3, 3333);
-// 	let guid = guidGen.gen(3);
+#[test]
+fn test_memery_db_p2() {
+	println!("test p2!!!!!!!");
+	//打开表
+	let tree:MemeryKV = None;
+	let mut root= OrdMap::new(tree);
+	let tab = MemeryTab {
+		prepare: HashMap::new(),
+		root: root,
+		tab: Atom::from("test3"),
+	};
+	let tab: ArcMutexTab = Arc::new(Mutex::new(tab));
+	let guidGen = GuidGen::new(3, 3333);
+	let guid = guidGen.gen(3);
 
-// 	let tab2 = &tab;
+	let tab2 = &tab;
 
-// 	// let start = now_nanos();
+	// let start = now_nanos();
 	
-// 	for n in (0..10) {
-// 		println!("test p2!!!!!!1!n:{}", n);
-// 		//创建事务
-// 		let txn = MemeryTxn::begin(tab2.clone(), &guidGen.gen(3));
-// 		println!("test p2!!!!!2!!n:{}", n);
-// 		let key = [n];
-// 		let v = Vec::from("vvvvvvvvvvvvvvvvvvvv");
-// 		assert_eq!(txn.borrow_mut().upsert(Arc::new(key.to_vec()), Arc::new(v)), Ok(()));
-// 		assert_eq!(txn.borrow_mut().prepare1(), Ok(()));
-// 		assert_eq!(txn.borrow_mut().commit1(), Ok(()));
-// 	};
+	for n in (0..10) {
+		//创建事务
+		let txn = MemeryTxn::new(tab2.clone(), &guidGen.gen(3));
+		let mut txn = txn.borrow_mut();
+		let key = [n];
+		let v = Vec::from("vvvvvvvvvvvvvvvvvvvv");
+
+		assert_eq!(txn.upsert(Arc::new(key.to_vec()), Arc::new(v)), Ok(()));
+		assert_eq!(txn.prepare1(), Ok(()));
+		assert_eq!(txn.commit1(), Ok(()));
+	};
 	
-// 	// let end = now_nanos();//获取结束时间
-//     // println!("done!start : {:?},end :{:?},duration:{:?}",start,end,end-start);
-// }
+	// let end = now_nanos();//获取结束时间
+    // println!("done!start : {:?},end :{:?},duration:{:?}",start,end,end-start);
+}

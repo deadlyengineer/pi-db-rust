@@ -1,18 +1,18 @@
 /**
- * 基于2pc的db管理器，每个db实现需要将自己注册到管理器上
+ * 基于2pc的库管理器，每个库实现需要将自己注册到数据库管理器上
  */
 use std::sync::{Arc, Mutex};
 use std::mem;
 
 use fnv::{FnvHashMap, FnvHashSet};
 
-use pi_lib::ordmap::OrdMap;
+use pi_lib::ordmap::{OrdMap, ActionResult};
 use pi_lib::asbtree::{Tree, new};
 use pi_lib::atom::Atom;
 use pi_lib::sinfo::StructInfo;
 use pi_lib::guid::Guid;
 
-use db::{DBResult, Tab, TabTxn, TabBuilder};
+use db::{SResult, Tab, TabTxn, Ware};
 
 // 表结构及修改日志
 pub struct TabLog {
@@ -23,15 +23,6 @@ pub struct TabLog {
 	rename_logs: FnvHashMap<Atom, (Atom, usize)>, // 新名字->(源名字, 版本号)
 }
 impl TabLog {
-	pub fn new(map: &OrdMap<Tree<Atom, TabInfo>>) -> Self {
-		TabLog {
-			map: map.clone(),
-			old_map: map.clone(),
-			meta_names: FnvHashSet::with_capacity_and_hasher(0, Default::default()),
-			alter_logs: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
-			rename_logs: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
-		}
-	}
 	// 表的元信息
 	fn replace(&mut self) -> Self {
 		TabLog {
@@ -52,11 +43,27 @@ impl TabLog {
 	// 新增 修改 删除 表
 	pub fn alter(&mut self, tab_name: &Atom, meta: Option<Arc<StructInfo>>) {
 		// 先查找rename_logs，获取该表的源名字及版本，然后修改alter_logs
-		let tab_ver = match self.rename_logs.get(tab_name) {
+		let (src_name, ver) = match self.rename_logs.get(tab_name) {
 			Some(v) => v.clone(),
 			_ => (tab_name.clone(), 0),
 		};
-		self.alter_logs.entry(tab_ver.clone()).or_insert(meta.clone());
+		let mut f = |v: Option<&TabInfo>| {
+			match v {
+				Some(ti) => match &meta {
+					Some(si) => ActionResult::Upsert(TabInfo {
+						meta: si.clone(),
+						init: ti.init.clone(),
+					}),
+					_ => ActionResult::Delete
+				},
+				_ => match &meta {
+					Some(si) => ActionResult::Upsert(TabInfo::new(si.clone())),
+					_ => ActionResult::Ignore
+				}
+			}
+		};
+		self.map.action(&src_name, &mut f);
+		self.alter_logs.entry((src_name, ver)).or_insert(meta.clone());
 		self.meta_names.insert(tab_name.clone());
 	}
 }
@@ -66,19 +73,25 @@ pub struct Tabs {
 	//全部的表结构
 	map: OrdMap<Tree<Atom, TabInfo>>,
 	// 预提交的元信息事务表
-	prepare: Mutex<FnvHashMap<Guid, TabLog>>,
+	prepare: FnvHashMap<Guid, TabLog>,
 }
 
 impl Tabs {
 	pub fn new() -> Self {
 		Tabs {
 			map : OrdMap::new(new()),
-			prepare: Mutex::new(FnvHashMap::with_capacity_and_hasher(0, Default::default())),
+			prepare: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
 		}
 	}
 	// 获取当前表结构快照
 	pub fn snapshot(&self) -> TabLog {
-		TabLog::new(&self.map)
+		TabLog {
+			map: self.map.clone(),
+			old_map: self.map.clone(),
+			meta_names: FnvHashSet::with_capacity_and_hasher(0, Default::default()),
+			alter_logs: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
+			rename_logs: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
+		}
 	}
 	// 获取表的元信息
 	pub fn get_tab_meta(&self, tab: &Atom) -> Option<Arc<StructInfo>> {
@@ -89,14 +102,14 @@ impl Tabs {
 	}
 	// 设置表的元信息
 	pub fn set_tab_meta(&mut self, tab: Atom, meta: Arc<StructInfo>) -> bool {
+			println!("set_tab_meta--------{}", &**tab);
 		self.map.insert(tab, TabInfo::new(meta))
 	}
 
 	// 元信息的预提交
-	pub fn parpare(&mut self, id: &Guid, log: &mut TabLog) -> DBResult<usize> {
+	pub fn prepare(&mut self, id: &Guid, log: &mut TabLog) -> SResult<()> {
 		// 先检查预提交的交易是否有冲突
-		let mut prepare = self.prepare.lock().unwrap();
-		for val in prepare.values() {
+		for val in self.prepare.values() {
 			if val.meta_names.is_disjoint(&log.meta_names) {
 				return Err(String::from("meta parpare conflicting"))
 			}
@@ -118,15 +131,17 @@ impl Tabs {
 				}
 			}
 		}
-		prepare.insert(id.clone(), log.replace());
-		Ok(1)
+		self.prepare.insert(id.clone(), log.replace());
+		Ok(())
 	}
 	// 元信息的提交
 	pub fn commit(&mut self, id: &Guid) {
-		match self.prepare.lock().unwrap().remove(id) {
+		println!("alter commit--------");
+		match self.prepare.remove(id) {
 			Some(log) => if self.map.ptr_eq(&log.old_map) {
 				// 检查数据表是否被修改， 如果没有修改，则可以直接替换根节点
 				self.map = log.map;
+			println!("alter commit--------{}", self.map.size());
 			}else{
 				// 否则，重新执行一遍修改， TODO
 			}
@@ -135,10 +150,11 @@ impl Tabs {
 	}
 	// 回滚
 	pub fn rollback(&mut self, id: &Guid) {
-		self.prepare.lock().unwrap().remove(id);
+		self.prepare.remove(id);
 	}
 	// 创建表事务
-	pub fn build(&mut self, builder: &Arc<TabBuilder>, tab_name: &Atom, id: &Guid, writable: bool, timeout:usize, cb: Box<Fn(DBResult<Arc<TabTxn>>)>) -> Option<DBResult<Arc<TabTxn>>> {
+	pub fn build<T: Ware>(&self, ware: &T, tab_name: &Atom, id: &Guid, writable: bool, cb: Box<Fn(SResult<Arc<TabTxn>>)>) -> Option<SResult<Arc<TabTxn>>> {
+		println!("build tab_name--------{} {}", &**tab_name, self.map.size());
 		match self.map.get(tab_name) {
 			Some(ref info) => {
 				let tab = {
@@ -147,9 +163,9 @@ impl Tabs {
 						Some(ref mut vec) => {// 表尚未build
 							if vec.len() == 0 {// 第一次调用
 								let var1 = info.init.clone();
-								match builder.open(tab_name, Box::new(move |tab| {
+								match ware.open(tab_name, Box::new(move |tab| {
 									// 异步返回，解锁后设置结果，返回等待函数数组
-									let vec:Vec<Box<Fn(DBResult<Arc<Tab>>)>> = {
+									let vec:Vec<Box<Fn(SResult<Arc<Tab>>)>> = {
 										let mut var = var1.lock().unwrap();
 										let vec = mem::replace(var.wait.as_mut().unwrap(), Vec::new());
 										var.tab = tab.clone();
@@ -167,12 +183,12 @@ impl Tabs {
 										var.tab.clone()
 									},
 									_ => { //异步的第1次调用，直接返回
-										vec.push(handle_fn(id.clone(), writable, timeout, cb));
+										vec.push(handle_fn(id.clone(), writable, cb));
 										return None
 									}
 								}
 							}else { // 异步的第n次调用，直接返回
-								vec.push(handle_fn(id.clone(), writable, timeout, cb));
+								vec.push(handle_fn(id.clone(), writable, cb));
 								return None
 							}
 						},
@@ -181,7 +197,7 @@ impl Tabs {
 				};
 				// 根据结果创建事务或返回错误
 				match tab {
-					Ok(tab) => Some(Ok(tab.transaction(&id, writable, timeout))),
+					Ok(tab) => Some(Ok(tab.transaction(&id, writable))),
 					Err(s) => Some(Err(s))
 				}
 			},
@@ -192,7 +208,7 @@ impl Tabs {
 //================================ 内部结构和方法
 // 表信息
 #[derive(Clone)]
-pub struct TabInfo {
+struct TabInfo {
 	meta: Arc<StructInfo>,
 	init: Arc<Mutex<TabInit>>,
 }
@@ -208,18 +224,18 @@ impl TabInfo {
 	}
 }
 // 表初始化
-pub struct TabInit {
-	tab: DBResult<Arc<Tab>>,
-	wait: Option<Vec<Box<Fn(DBResult<Arc<Tab>>)>>>, // 为None表示表示tab已经加载
+struct TabInit {
+	tab: SResult<Arc<Tab>>,
+	wait: Option<Vec<Box<Fn(SResult<Arc<Tab>>)>>>, // 为None表示tab已经加载
 }
 //================================ 内部静态方法
 // 表构建函数的回调函数
-fn handle_fn(id: Guid, writable: bool, timeout: usize, cb: Box<Fn(DBResult<Arc<TabTxn>>)>) -> Box<Fn(DBResult<Arc<Tab>>)> {
+fn handle_fn(id: Guid, writable: bool, cb: Box<Fn(SResult<Arc<TabTxn>>)>) -> Box<Fn(SResult<Arc<Tab>>)> {
 	Box::new(move |r| {
 		match r {
 			Ok(tab) => {
 				// 创建事务
-				(*cb)(Ok(tab.transaction(&id, writable, timeout)))
+				(*cb)(Ok(tab.transaction(&id, writable)))
 			},
 			Err(s) => (*cb)(Err(s))
 		}
