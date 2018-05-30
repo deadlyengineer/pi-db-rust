@@ -19,7 +19,7 @@ use db::{SResult, DBResult, Cursor, TabKV, TxCallback, TxIterCallback, TxQueryCa
 #[cfg(test)]
 use memery_db;
 #[cfg(test)]
-use pi_lib::bon::{BonBuffer, Encode, Decode};
+use pi_lib::bon::{WriteBuffer, ReadBuffer, Encode, Decode};
 #[cfg(test)]
 use std::collections::HashMap;
 
@@ -888,7 +888,7 @@ struct Player{
 
 #[cfg(test)]
 impl Encode for Player{
-	fn encode(&self, bb: &mut BonBuffer){
+	fn encode(&self, bb: &mut WriteBuffer){
 		self.name.encode(bb);
 		self.id.encode(bb);
 	}
@@ -896,7 +896,7 @@ impl Encode for Player{
 
 #[cfg(test)]
 impl Decode for Player{
-	fn decode(bb: &mut BonBuffer) -> Self{
+	fn decode(bb: &mut ReadBuffer) -> Self{
 		Player{
 			name: String::decode(bb),
 			id: u32::decode(bb),
@@ -954,7 +954,7 @@ fn test_memery_db_mgr(){
 							for elem in v.iter_mut(){
 								match elem.value {
 									Some(ref mut v) => {
-										let mut buf = BonBuffer::with_bytes(Arc::make_mut(v), None, None);
+										let mut buf = ReadBuffer::new(Arc::make_mut(v),0);
 										let p = Player::decode(&mut buf);
 										println!("{:?}", p);
 									},
@@ -988,8 +988,7 @@ fn test_memery_db_mgr(){
 				name: String::from("chuanyan"),
 				id:5
 			};
-			let mut vu8 = vec![];
-			let mut bonbuf = BonBuffer::with_bytes(&mut vu8, None, None);
+			let mut bonbuf = WriteBuffer::new();
 			let bon = p.encode(&mut bonbuf);
 
 			let mut arr = Vec::new();
@@ -998,7 +997,7 @@ fn test_memery_db_mgr(){
 				tab: Atom::from("Player"),
 				key: Arc::new(vec![5u8]),
 				index: 0,
-				value: Some(Arc::new(vu8)),
+				value: Some(Arc::new(bonbuf.unwrap())),
 			};
 			arr.push(t1);
 
