@@ -117,7 +117,7 @@ pub trait Ware {
 	// 获取当前表结构快照
 	fn snapshot(&self) -> TabLog;
 	// 创建指定表的表事务
-	fn tab_txn(&self, tab_name: &Atom, id: &Guid, writable: bool, cb: Box<Fn(SResult<Arc<TabTxn>>)>) -> Option<SResult<Arc<TabTxn>>>;
+	fn tab_txn(&self, tab_log: &TabLog, tab_name: &Atom, id: &Guid, writable: bool, cb: Box<Fn(SResult<Arc<TabTxn>>)>) -> Option<SResult<Arc<TabTxn>>>;
 
 	// 检查该表是否可以创建
 	fn check(

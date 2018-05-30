@@ -741,7 +741,7 @@ impl Tx {
 		let txn = match self.tab_txns.get(tab_name) {
 			Some(r) => return Some(Ok(r.clone())),
 			_ => match self.ware_log_map.get_mut(war_name) {
-				Some((ware, _)) => match ware.tab_txn(tab_name, &self.id, self.writable, cb) {
+				Some((ware, tab_log)) => match ware.tab_txn(&tab_log, tab_name, &self.id, self.writable, cb) {
 					Some(r) => match r {
 						Ok(txn) => txn,
 						err => {
@@ -990,7 +990,7 @@ fn test_memery_db_mgr(){
 				id:5
 			};
 			let mut bonbuf = WriteBuffer::new();
-			let bon = p.encode(&mut bonbuf);
+			p.encode(&mut bonbuf);
 
 			let mut arr = Vec::new();
 			let t1 = TabKV{

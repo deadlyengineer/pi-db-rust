@@ -66,6 +66,58 @@ impl TabLog {
 		self.alter_logs.entry((src_name, ver)).or_insert(meta.clone());
 		self.meta_names.insert(tab_name.clone());
 	}
+	// 创建表事务
+	pub fn build<T: Ware>(&self, ware: &T, tab_name: &Atom, id: &Guid, writable: bool, cb: Box<Fn(SResult<Arc<TabTxn>>)>) -> Option<SResult<Arc<TabTxn>>> {
+		println!("build tab_name--------{} {}", &**tab_name, self.map.size());
+		match self.map.get(tab_name) {
+			Some(ref info) => {
+				let tab = {
+					let mut var = info.init.lock().unwrap();
+					match var.wait {
+						Some(ref mut vec) => {// 表尚未build
+							if vec.len() == 0 {// 第一次调用
+								let var1 = info.init.clone();
+								match ware.open(tab_name, Box::new(move |tab| {
+									// 异步返回，解锁后设置结果，返回等待函数数组
+									let vec:Vec<Box<Fn(SResult<Arc<Tab>>)>> = {
+										let mut var = var1.lock().unwrap();
+										let vec = mem::replace(var.wait.as_mut().unwrap(), Vec::new());
+										var.tab = tab.clone();
+										var.wait = None;
+										vec
+									};
+									// 通知所有的等待函数数组
+									for f in vec.into_iter() {
+										(*f)(tab.clone())
+									}
+								})) {
+									Some(r) => {// 同步返回，设置结果
+										var.tab = r;
+										var.wait = None;
+										var.tab.clone()
+									},
+									_ => { //异步的第1次调用，直接返回
+										vec.push(handle_fn(id.clone(), writable, cb));
+										return None
+									}
+								}
+							}else { // 异步的第n次调用，直接返回
+								vec.push(handle_fn(id.clone(), writable, cb));
+								return None
+							}
+						},
+						_ => var.tab.clone()
+					}
+				};
+				// 根据结果创建事务或返回错误
+				match tab {
+					Ok(tab) => Some(Ok(tab.transaction(&id, writable))),
+					Err(s) => Some(Err(s))
+				}
+			},
+			_ => Some(Err(String::from("TabNotFound")))
+		}
+	}
 }
 
 // 表管理器
@@ -152,58 +204,7 @@ impl Tabs {
 	pub fn rollback(&mut self, id: &Guid) {
 		self.prepare.remove(id);
 	}
-	// 创建表事务
-	pub fn build<T: Ware>(&self, ware: &T, tab_name: &Atom, id: &Guid, writable: bool, cb: Box<Fn(SResult<Arc<TabTxn>>)>) -> Option<SResult<Arc<TabTxn>>> {
-		println!("build tab_name--------{} {}", &**tab_name, self.map.size());
-		match self.map.get(tab_name) {
-			Some(ref info) => {
-				let tab = {
-					let mut var = info.init.lock().unwrap();
-					match var.wait {
-						Some(ref mut vec) => {// 表尚未build
-							if vec.len() == 0 {// 第一次调用
-								let var1 = info.init.clone();
-								match ware.open(tab_name, Box::new(move |tab| {
-									// 异步返回，解锁后设置结果，返回等待函数数组
-									let vec:Vec<Box<Fn(SResult<Arc<Tab>>)>> = {
-										let mut var = var1.lock().unwrap();
-										let vec = mem::replace(var.wait.as_mut().unwrap(), Vec::new());
-										var.tab = tab.clone();
-										var.wait = None;
-										vec
-									};
-									// 通知所有的等待函数数组
-									for f in vec.into_iter() {
-										(*f)(tab.clone())
-									}
-								})) {
-									Some(r) => {// 同步返回，设置结果
-										var.tab = r;
-										var.wait = None;
-										var.tab.clone()
-									},
-									_ => { //异步的第1次调用，直接返回
-										vec.push(handle_fn(id.clone(), writable, cb));
-										return None
-									}
-								}
-							}else { // 异步的第n次调用，直接返回
-								vec.push(handle_fn(id.clone(), writable, cb));
-								return None
-							}
-						},
-						_ => var.tab.clone()
-					}
-				};
-				// 根据结果创建事务或返回错误
-				match tab {
-					Ok(tab) => Some(Ok(tab.transaction(&id, writable))),
-					Err(s) => Some(Err(s))
-				}
-			},
-			_ => Some(Err(String::from("TabNotFound")))
-		}
-	}
+
 }
 //================================ 内部结构和方法
 // 表信息

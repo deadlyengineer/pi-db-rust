@@ -64,8 +64,8 @@ impl Ware for MemeryDB {
 		self.0.read().unwrap().snapshot()
 	}
 	// 创建指定表的表事务
-	fn tab_txn(&self, tab_name: &Atom, id: &Guid, writable: bool, cb: Box<Fn(SResult<Arc<TabTxn>>)>) -> Option<SResult<Arc<TabTxn>>> {
-		self.0.read().unwrap().build(self, tab_name, id, writable, cb)
+	fn tab_txn(&self, tab_log: &TabLog, tab_name: &Atom, id: &Guid, writable: bool, cb: Box<Fn(SResult<Arc<TabTxn>>)>) -> Option<SResult<Arc<TabTxn>>> {
+		tab_log.build(self, tab_name, id, writable, cb)
 	}
 	// 检查该表是否可以创建
 	fn check(
