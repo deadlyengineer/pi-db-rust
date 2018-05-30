@@ -16,13 +16,6 @@ use pi_lib::guid::{Guid, GuidGen};
 use tabs::TabLog;
 use db::{SResult, DBResult, Cursor, TabKV, TxCallback, TxIterCallback, TxQueryCallback, TxState, MetaTxn, TabTxn, Ware};
 
-#[cfg(test)]
-use memery_db;
-#[cfg(test)]
-use pi_lib::bon::{WriteBuffer, ReadBuffer, Encode, Decode};
-#[cfg(test)]
-use std::collections::HashMap;
-
 // 表库及事务管理器
 #[derive(Clone)]
 pub struct Mgr(Arc<Mutex<Manager>>, Arc<Mutex<WareMap>>, Arc<GuidGen>, Statistics);
@@ -879,6 +872,14 @@ fn single_result_err(r: SResult<()>, tr: &Tr, cb: &TxCallback) {
 		(*cb)(r)
 	}
 }
+
+#[cfg(test)]
+use memery_db;
+#[cfg(test)]
+use pi_lib::bon::{WriteBuffer, ReadBuffer, Encode, Decode};
+#[cfg(test)]
+use std::collections::HashMap;
+
 #[cfg(test)]
 #[derive(Debug)]
 struct Player{
