@@ -280,7 +280,6 @@ impl Manager {
 		// 遍历ware_map, 将每个Ware的快照TabLog记录下来
 		let mut map = FnvHashMap::with_capacity_and_hasher(ware_map.0.size() * 3 / 2, Default::default());
 		let mut f = |e: &Entry<Atom, Arc<Ware>>| {
-			println!("log-----------{:?}, ", &**e.key().clone());
 			map.insert(e.key().clone(), (e.value().clone(), e.value().snapshot()));
 		};
 		ware_map.0.select(None, false, &mut f);
@@ -351,7 +350,13 @@ impl Tx {
 		if alter_len > 0 {
 			for ware in self.meta_txns.keys() {
 				let (ware, log) = self.ware_log_map.get_mut(ware).unwrap();
-				ware.prepare(&self.id, log); // TODO 检查返回值
+				match ware.prepare(&self.id, log) {
+					Err(s) =>{
+						self.state = TxState::PreparFail;
+						return Some(Err(s))
+					},
+					_ => ()
+				}
 			}
 		}
 		let len = self.tab_txns.len() + alter_len;
@@ -704,8 +709,6 @@ impl Tx {
 	}
 	// 新增 修改 删除 表
 	fn alter(&mut self, tr: &Tr, war_name: &Atom, tab_name: &Atom, meta: Option<Arc<StructInfo>>, cb: TxCallback) -> DBResult {
-			println!("alter-----------{:?} {}, ", &**war_name, self.ware_log_map.len());
-
 		self.state = TxState::Doing;
 		let ware = match self.ware_log_map.get_mut(war_name) {
 			Some((ware, log)) => match ware.check(tab_name, &meta) { // 检查
@@ -728,14 +731,13 @@ impl Tx {
 		self.single_result(txn.alter(tab_name, meta, bf))
 	}
 	// 表改名
-	fn rename(&mut self, tr: &Tr, war_name: &Atom, old_name: &Atom, new_name: Atom, cb: TxCallback) -> DBResult {
+	fn rename(&mut self, _tr: &Tr, _war_name: &Atom, _old_name: &Atom, _new_name: Atom, _cb: TxCallback) -> DBResult {
 		self.state = TxState::Doing;
 		// TODO
 		None
 	}
 	// 创建表
 	fn build(&mut self, war_name: &Atom, tab_name: &Atom, cb: Box<Fn(SResult<Arc<TabTxn>>)>) -> Option<SResult<Arc<TabTxn>>> {
-		println!("build--------{}", &**war_name);
 		let txn = match self.tab_txns.get(tab_name) {
 			Some(r) => return Some(Ok(r.clone())),
 			_ => match self.ware_log_map.get_mut(war_name) {
@@ -946,7 +948,6 @@ fn test_memery_db_mgr(){
 				arr.push(t1);
 
 				let read_back = Arc::new(move|r: SResult<Vec<TabKV>>|{
-					//println!("read: {:?}", r);
 					assert!(r.is_ok());
 					match r {
 						Ok(mut v) => {

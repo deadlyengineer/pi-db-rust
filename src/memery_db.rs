@@ -1,22 +1,20 @@
 
 use std::sync::{Arc, Mutex, RwLock};
-use std::collections::HashMap;
 use std::cell::RefCell;
 use std::mem;
 
 use fnv::FnvHashMap;
 
 use pi_lib::ordmap::{OrdMap, Entry};
-use pi_lib::asbtree::{Tree, new};
+use pi_lib::asbtree::{Tree};
 use pi_lib::atom::{Atom};
 use pi_lib::guid::Guid;
 use pi_lib::sinfo::StructInfo;
-use pi_lib::bon::{BonBuffer, Encode};
 
 use db::{Txn, TabTxn, TabKV, TxIterCallback, TxQueryCallback, MetaTxn, Tab, Ware, TxCallback, TxState, Cursor, SResult, DBResult};
 use tabs::{TabLog, Tabs};
 
-pub type Rwlog = HashMap<Arc<Vec<u8>>, RwLog>;
+pub type Rwlog = FnvHashMap<Arc<Vec<u8>>, RwLog>;
 pub type MemeryKV = Tree<Arc<Vec<u8>>, Arc<Vec<u8>>>;
 pub type Root = OrdMap<MemeryKV>;
 
@@ -54,7 +52,7 @@ impl Ware for MemeryDB {
 		let tree:MemeryKV = None;
 		let root= OrdMap::new(tree);
 		let tab = MemeryTab {
-			prepare: HashMap::new(),
+			prepare: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
 			root: root,
 			tab: tab.clone(),
 		};
@@ -72,14 +70,14 @@ impl Ware for MemeryDB {
 	// 检查该表是否可以创建
 	fn check(
 		&self,
-		tab: &Atom,
-		meta: &Option<Arc<StructInfo>>,
+		_tab: &Atom,
+		_meta: &Option<Arc<StructInfo>>,
 	) -> SResult<()> {
 		Ok(())
 	}
 
 	// 创建一个meta事务
-	fn meta_txn(&self, id: &Guid) -> Arc<MetaTxn> {
+	fn meta_txn(&self, _id: &Guid) -> Arc<MetaTxn> {
 		Arc::new(MemeryMetaTxn())
 	}
 	// 元信息的预提交
@@ -98,7 +96,7 @@ impl Ware for MemeryDB {
 
 // 内存表
 pub struct MemeryTab {
-	pub prepare: HashMap<Guid, Rwlog>,
+	pub prepare: FnvHashMap<Guid, Rwlog>,
 	pub root: Root,
 	pub tab: Atom,
 }
@@ -132,7 +130,7 @@ impl MemeryTxn {
 			tab: tab,
 			root: root.clone(),
 			old: root,
-			rwlog: HashMap::new(),
+			rwlog: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
 			state: TxState::Ok,
 		};
 		return RefCell::new(txn)
@@ -201,7 +199,7 @@ impl MemeryTxn {
 				}
 			}
 		}
-		let rwlog = mem::replace(&mut self.rwlog, HashMap::with_capacity_and_hasher(0, Default::default()));
+		let rwlog = mem::replace(&mut self.rwlog, FnvHashMap::with_capacity_and_hasher(0, Default::default()));
 		//写入预提交
 		tab.prepare.insert(self.id.clone(), rwlog);
 		return Ok(())
@@ -209,45 +207,35 @@ impl MemeryTxn {
 	//提交
 	pub fn commit1(&mut self) -> SResult<()> {
 		let mut tab = self.tab.lock().unwrap();
-		let mut write = Vec::new();
-		let root_if_eq = tab.root.ptr_eq(&self.old);
-		//判断根节点是否相等
-		if root_if_eq == false {
-			match tab.prepare.get(&self.id) {
-				Some(rwlog) => {
+		match tab.prepare.remove(&self.id) {
+			Some(rwlog) => {
+				let root_if_eq = tab.root.ptr_eq(&self.old);
+				//判断根节点是否相等
+				if root_if_eq == false {
 					for (k, rw_v) in rwlog.iter() {
 						match rw_v {
 							RwLog::Read => (),
 							_ => {
-								write.push((k.clone(), rw_v.clone()));
+								match rw_v {
+									RwLog::Write(None) => {
+										tab.root.delete(&k, false);
+										()
+									},
+									RwLog::Write(Some(v)) => {
+										tab.root.upsert(k.clone(), v.clone(), false);
+										()
+									},
+									_ => (),
+								}
 								()
 							},
 						}
 					}
-				},
-				None => {
-					return Err(String::from("error prepare null"))
-					},
-			}
-			for (k, rw_v) in write {
-				match rw_v {
-					RwLog::Write(None) => {
-						tab.root.delete(&k, false);
-						()
-					},
-					RwLog::Write(Some(v)) => {
-						tab.root.upsert(k, v.clone(), false);
-						()
-					},
-					_ => (),
+				} else {
+					tab.root = self.root.clone();
 				}
-			}
-			//删除预提交
-			tab.prepare.remove(&self.id);
-		} else {
-			tab.root = self.root.clone();
-			//删除预提交
-			tab.prepare.remove(&self.id);
+			},
+			None => return Err(String::from("error prepare null"))
 		}
 		Ok(())
 	}
@@ -320,18 +308,10 @@ impl TabTxn for RefMemeryTxn {
 		let mut txn = self.borrow_mut();
 		let mut value_arr = Vec::new();
 		for tabkv in arr.iter() {
-			let mut value = None;
-			match txn.get(tabkv.key.clone()) {
-				Some(v) =>
-					{
-						value = Some(v);
-						()
-					},
-				_ =>
-					{
-						return Some(Err(String::from("null")))
-					},
-			}
+			let value = match txn.get(tabkv.key.clone()) {
+				Some(v) => Some(v),
+				_ => return Some(Err(String::from("null")))
+			};
 			value_arr.push(
 				TabKV{
 				ware: tabkv.ware.clone(),
