@@ -991,7 +991,7 @@ fn test_memery_db_mgr(){
 				id:5
 			};
 			let mut bonbuf = WriteBuffer::new();
-			let bon = p.encode(&mut bonbuf);
+			p.encode(&mut bonbuf);
 
 			let mut arr = Vec::new();
 			let t1 = TabKV{
