@@ -1,5 +1,6 @@
 extern crate pi_lib;
 extern crate pi_db;
+extern crate fnv;
 
 use pi_db::memery_db::{ArcMutexTab, MemeryTxn, MemeryKV, MemeryTab};
 
@@ -13,7 +14,7 @@ use pi_lib::sinfo::StructInfo;
 use pi_lib::time::now_nanos;
 
 use std::sync::{Arc, Mutex};
-use std::collections::HashMap;
+use fnv::FnvHashMap;
 use std::cell::RefCell;
 
 #[test]
@@ -22,7 +23,7 @@ fn test_memery_db() {
 	let tree:MemeryKV = None;
 	let mut root= OrdMap::new(tree);
 	let tab = MemeryTab {
-		prepare: HashMap::new(),
+		prepare: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
 		root: root,
 		tab: Atom::from("test"),
 	};
@@ -68,7 +69,7 @@ fn test_memery_db_p() {
 	let tree:MemeryKV = None;
 	let mut root= OrdMap::new(tree);
 	let tab = MemeryTab {
-		prepare: HashMap::new(),
+		prepare: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
 		root: root,
 		tab: Atom::from("test2"),
 	};
@@ -102,7 +103,7 @@ fn test_memery_db_p2() {
 	let tree:MemeryKV = None;
 	let mut root= OrdMap::new(tree);
 	let tab = MemeryTab {
-		prepare: HashMap::new(),
+		prepare: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
 		root: root,
 		tab: Atom::from("test3"),
 	};

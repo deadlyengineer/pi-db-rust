@@ -5,8 +5,8 @@
 	"tasks": [
 		{
 			"type": "shell",
-			"taskName": "cargo build",
-			"command": "cargo",
+			"taskName": "cargo-clippy build",
+			"command": "cargo-clippy",
 			"args": [
 				"build"
 			],
