@@ -11,7 +11,6 @@ use pi_lib::asbtree::{Tree, new};
 use pi_lib::atom::{Atom};
 use pi_lib::guid::Guid;
 use pi_lib::sinfo::StructInfo;
-use pi_lib::bon::{BonBuffer, Encode};
 
 use db::{Txn, TabTxn, TabKV, TxIterCallback, TxQueryCallback, MetaTxn, Tab, Ware, TxCallback, TxState, Cursor, SResult, DBResult};
 use tabs::{TabLog, Tabs};
