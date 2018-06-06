@@ -1,12 +1,12 @@
 /**
- * 基于2pc的库管理器，每个库实现需要将自己注册到数据库管理器上
+ * 表管理器，给每个具体的Ware用
  */
 use std::sync::{Arc, Mutex};
 use std::mem;
 
 use fnv::{FnvHashMap, FnvHashSet};
 
-use pi_lib::ordmap::{OrdMap, ActionResult};
+use pi_lib::ordmap::{OrdMap, Entry, ActionResult};
 use pi_lib::asbtree::{Tree, new};
 use pi_lib::atom::Atom;
 use pi_lib::sinfo::StructInfo;
@@ -68,7 +68,6 @@ impl TabLog {
 	}
 	// 创建表事务
 	pub fn build<T: Ware>(&self, ware: &T, tab_name: &Atom, id: &Guid, writable: bool, cb: Box<Fn(SResult<Arc<TabTxn>>)>) -> Option<SResult<Arc<TabTxn>>> {
-		println!("build tab_name--------{} {}", &**tab_name, self.map.size());
 		match self.map.get(tab_name) {
 			Some(ref info) => {
 				let tab = {
@@ -135,6 +134,22 @@ impl Tabs {
 			prepare: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
 		}
 	}
+	// 列出全部的表
+	pub fn list(&self) -> Vec<Atom> {
+		let mut vec = Vec::with_capacity(self.map.size());
+		let mut f = |e: &Entry<Atom, TabInfo>| {
+			vec.push(e.0.clone());
+		};
+		self.map.select(None, false, &mut f);
+		vec
+	}
+	// 获取指定的表结构
+	pub fn get(&self, tab: &Atom) -> Option<Arc<StructInfo>> {
+		match self.map.get(tab) {
+			Some(t) => Some(t.meta.clone()),
+			_ => None
+		}
+	}
 	// 获取当前表结构快照
 	pub fn snapshot(&self) -> TabLog {
 		TabLog {
@@ -154,7 +169,6 @@ impl Tabs {
 	}
 	// 设置表的元信息
 	pub fn set_tab_meta(&mut self, tab: Atom, meta: Arc<StructInfo>) -> bool {
-			println!("set_tab_meta--------{}", &**tab);
 		self.map.insert(tab, TabInfo::new(meta))
 	}
 
@@ -188,12 +202,10 @@ impl Tabs {
 	}
 	// 元信息的提交
 	pub fn commit(&mut self, id: &Guid) {
-		println!("alter commit--------");
 		match self.prepare.remove(id) {
 			Some(log) => if self.map.ptr_eq(&log.old_map) {
 				// 检查数据表是否被修改， 如果没有修改，则可以直接替换根节点
 				self.map = log.map;
-			println!("alter commit--------{}", self.map.size());
 			}else{
 				// 否则，重新执行一遍修改， TODO
 			}
@@ -236,9 +248,9 @@ fn handle_fn(id: Guid, writable: bool, cb: Box<Fn(SResult<Arc<TabTxn>>)>) -> Box
 		match r {
 			Ok(tab) => {
 				// 创建事务
-				(*cb)(Ok(tab.transaction(&id, writable)))
+				cb(Ok(tab.transaction(&id, writable)))
 			},
-			Err(s) => (*cb)(Err(s))
+			Err(s) => cb(Err(s))
 		}
 	})
 }

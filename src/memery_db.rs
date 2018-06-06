@@ -11,11 +11,11 @@ use pi_lib::atom::{Atom};
 use pi_lib::guid::Guid;
 use pi_lib::sinfo::StructInfo;
 
-use db::{Txn, TabTxn, TabKV, TxIterCallback, TxQueryCallback, MetaTxn, Tab, Ware, TxCallback, TxState, Cursor, SResult, DBResult};
+use db::{Txn, TabTxn, TabKV, TxQueryCallback, MetaTxn, Tab, Ware, TxCallback, Filter, TxState, Iter, KeyIter, SResult, DBResult, IterResult, KeyIterResult, NextResult, KeyNextResult, Bin};
 use tabs::{TabLog, Tabs};
 
-pub type Rwlog = FnvHashMap<Arc<Vec<u8>>, RwLog>;
-pub type MemeryKV = Tree<Arc<Vec<u8>>, Arc<Vec<u8>>>;
+pub type Rwlog = FnvHashMap<Bin, RwLog>;
+pub type MemeryKV = Tree<Bin, Bin>;
 pub type Root = OrdMap<MemeryKV>;
 
 // 内存库
@@ -33,15 +33,15 @@ impl Ware for MemeryDB {
 	// }
 	// 列出全部的表
 	fn list(&self) -> Vec<Atom> {
-		return vec![]
+		self.0.read().unwrap().list()
 	}
 	// 获取该库对预提交后的处理超时时间, 事务会用最大超时时间来预提交
 	fn timeout(&self) -> usize {
 		TIMEOUT
 	}
 	// 表的元信息
-	fn tab_info(&self, _tab_name: &Atom) -> Option<Arc<StructInfo>> {
-		None
+	fn tab_info(&self, tab_name: &Atom) -> Option<Arc<StructInfo>> {
+		self.0.read().unwrap().get(tab_name)
 	}
 	// 打开指定的表，表必须有meta
 	fn open(
@@ -102,8 +102,8 @@ pub struct MemeryTab {
 }
 pub type ArcMutexTab = Arc<Mutex<MemeryTab>>;
 impl Tab for ArcMutexTab {
-	fn transaction(&self, id: &Guid, _writable: bool) -> Arc<TabTxn> {
-		let txn = MemeryTxn::new(self.clone(), id);
+	fn transaction(&self, id: &Guid, writable: bool) -> Arc<TabTxn> {
+		let txn = MemeryTxn::new(self.clone(), id, writable);
 		return Arc::new(txn)
 	}
 
@@ -112,6 +112,7 @@ impl Tab for ArcMutexTab {
 // 内存事务
 pub struct MemeryTxn {
 	id: Guid,
+	writable: bool,
 	tab: ArcMutexTab,
 	root: Root,
 	old: Root,
@@ -123,10 +124,11 @@ pub type RefMemeryTxn = RefCell<MemeryTxn>;
 
 impl MemeryTxn {
 	//开始事务
-	pub fn new(tab: ArcMutexTab, id: &Guid) -> RefMemeryTxn {
+	pub fn new(tab: ArcMutexTab, id: &Guid, writable: bool) -> RefMemeryTxn {
 		let root = tab.lock().unwrap().root.clone();
 		let txn = MemeryTxn {
 			id: id.clone(),
+			writable: writable,
 			tab: tab,
 			root: root.clone(),
 			old: root,
@@ -136,14 +138,16 @@ impl MemeryTxn {
 		return RefCell::new(txn)
 	}
 	//获取数据
-	pub fn get(&mut self, key: Arc<Vec<u8>>) -> Option<Arc<Vec<u8>>> {
+	pub fn get(&mut self, key: Bin) -> Option<Bin> {
 		match self.root.get(&key) {
 			Some(v) => {
-				match self.rwlog.get(&key) {
-					Some(_) => (),
-					None => {
-						&mut self.rwlog.insert(key, RwLog::Read);
-						()
+				if self.writable {
+					match self.rwlog.get(&key) {
+						Some(_) => (),
+						None => {
+							&mut self.rwlog.insert(key, RwLog::Read);
+							()
+						}
 					}
 				}
 				return Some(v.clone())
@@ -152,21 +156,18 @@ impl MemeryTxn {
 		}
 	}
 	//插入/修改数据
-	pub fn upsert(&mut self, key: Arc<Vec<u8>>, value: Arc<Vec<u8>>) -> SResult<()> {
+	pub fn upsert(&mut self, key: Bin, value: Bin) -> SResult<()> {
 		self.root.upsert(key.clone(), value.clone(), false);
 		self.rwlog.insert(key.clone(), RwLog::Write(Some(value.clone())));
 		Ok(())
 	}
 	//删除
-	pub fn delete(&mut self, key: Arc<Vec<u8>>) -> SResult<()> {
+	pub fn delete(&mut self, key: Bin) -> SResult<()> {
 		self.root.delete(&key, false);
 		self.rwlog.insert(key.clone(), RwLog::Write(None));
 		Ok(())
 	}
-	//迭代
-	pub fn select<F>(&self, key: Option<&Arc<Vec<u8>>>, descending: bool, func: &mut F) where F: FnMut(&Entry<Arc<Vec<u8>>, Arc<Vec<u8>>>) {
-		self.root.select(key, descending, func)
-	}
+
 	//预提交
 	pub fn prepare1(&mut self) -> SResult<()> {
 		let mut tab = self.tab.lock().unwrap();
@@ -189,7 +190,7 @@ impl MemeryTxn {
 			if tab.root.ptr_eq(&self.old) == false {
 				match tab.root.get(&key) {
 					Some(r1) => match self.old.get(&key) {
-						Some(r2) if (r1 as *const Arc<Vec<u8>>) == (r2 as *const Arc<Vec<u8>>) => (),
+						Some(r2) if (r1 as *const Bin) == (r2 as *const Bin) => (),
 						_ => return Err(String::from("parpare conflicted value diff"))
 					},
 					_ => match self.old.get(&key) {
@@ -351,25 +352,33 @@ impl TabTxn for RefMemeryTxn {
 	// 迭代
 	fn iter(
 		&self,
-		_tab: &Atom,
-		_key: Option<Vec<u8>>,
-		_descending: bool,
-		_key_only: bool,
-		_filter: String,
-		_cb: TxIterCallback,
-	) -> Option<SResult<Box<Cursor>>> {
-        None
+		key: Option<Bin>,
+		descending: bool,
+		filter: Filter,
+		cb: Arc<Fn(IterResult)>,
+	) -> Option<IterResult> {
+		Some(Ok(Box::new(MemIter::new(self.borrow_mut().root.clone(), key, descending, filter))))
+	}
+	// 迭代
+	fn key_iter(
+		&self,
+		key: Option<Bin>,
+		descending: bool,
+		filter: Filter,
+		cb: Arc<Fn(KeyIterResult)>,
+	) -> Option<KeyIterResult> {
+		Some(Ok(Box::new(MemKeyIter::new(self.borrow_mut().root.clone(), key, descending, filter))))
 	}
 	// 索引迭代
 	fn index(
 		&self,
 		_tab: &Atom,
 		_index_key: &Atom,
-		_key: Option<Vec<u8>>,
+		_key: Option<Bin>,
 		_descending: bool,
-		_filter: String,
-		_cb: TxIterCallback,
-	) -> Option<SResult<Box<Cursor>>> {
+		_filter: Filter,
+		_cb: Arc<Fn(IterResult)>,
+	) -> Option<IterResult> {
 		None
 	}
 	// 表的大小
@@ -388,7 +397,83 @@ const TIMEOUT: usize = 100;
 #[derive(Clone, Debug)]
 pub enum RwLog {
 	Read,
-	Write(Option<Arc<Vec<u8>>>),
+	Write(Option<Bin>),
+}
+
+// 内存迭代器
+struct MemIter {
+	root: Root,
+	key: Option<Bin>,
+	descending: bool,
+	filter: Filter,
+	arr: SResult<Vec<(Bin, Bin)>>,
+}
+impl MemIter{
+	fn new(root: Root, key: Option<Bin>, descending: bool, filter: Filter) -> Self {
+		let mut vec = Vec::new();
+		let mut f = |e: &Entry<Bin, Bin>| {
+			vec.push((e.0.clone(), e.1.clone()));
+		};
+		let k1 = match key {
+			Some(ref b) => Some(b),
+			_ => None
+		};
+		root.select(k1, descending, &mut f);
+		vec[..].reverse();
+		MemIter {
+			root: root,
+			key: key,
+			descending: descending,
+			filter: filter,
+			arr: Ok(vec),
+		}
+	}
+}
+impl Iter for MemIter{
+	fn next(&mut self, _cb: Arc<Fn(NextResult)>) -> Option<NextResult> {
+		match &mut self.arr {
+			&mut Ok(ref mut v) => Some(Ok(v.pop())),
+			Err(s) => Some(Err(s.clone()))
+		}
+	}
+}
+
+// 内存迭代器
+struct MemKeyIter {
+	root: Root,
+	key: Option<Bin>,
+	descending: bool,
+	filter: Filter,
+	arr: SResult<Vec<Bin>>,
+}
+impl MemKeyIter{
+	fn new(root: Root, key: Option<Bin>, descending: bool, filter: Filter) -> Self {
+		let mut vec = Vec::new();
+		let mut f = |e: &Entry<Bin, Bin>| {
+			vec.push(e.0.clone());
+		};
+		let k1 = match key {
+			Some(ref b) => Some(b),
+			_ => None
+		};
+		root.select(k1, descending, &mut f);
+		vec[..].reverse();
+		MemKeyIter {
+			root: root,
+			key: key,
+			descending: descending,
+			filter: filter,
+			arr: Ok(vec),
+		}
+	}
+}
+impl KeyIter for MemKeyIter{
+	fn next(&mut self, _cb: Arc<Fn(KeyNextResult)>) -> Option<KeyNextResult> {
+		match &mut self.arr {
+			&mut Ok(ref mut v) => Some(Ok(v.pop())),
+			Err(s) => Some(Err(s.clone()))
+		}
+	}
 }
 
 pub struct MemeryMetaTxn();

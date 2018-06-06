@@ -15,12 +15,19 @@ use tabs::TabLog;
 // 系统表的前缀
 pub const PRIFIX: &str = "_$";
 
+pub type Bin = Arc<Vec<u8>>;
+
 pub type SResult<T> = Result<T, String>;
 pub type DBResult = Option<SResult<()>>;
+pub type IterResult = SResult<Box<Iter>>;
+pub type KeyIterResult = SResult<Box<KeyIter>>;
+pub type NextResult = SResult<Option<(Bin, Bin)>>;
+pub type KeyNextResult = SResult<Option<Bin>>;
 
 pub type TxCallback = Arc<Fn(SResult<()>)>;
 pub type TxQueryCallback = Arc<Fn(SResult<Vec<TabKV>>)>;
-pub type TxIterCallback = Arc<Fn(SResult<Box<Cursor>>)>;
+
+pub type Filter = Option<Arc<Fn(Bin)-> Option<Bin>>>;
 
 //事务
 pub trait Txn {
@@ -51,28 +58,34 @@ pub trait TabTxn : Txn{
 	// 迭代
 	fn iter(
 		&self,
-		tab: &Atom,
-		key: Option<Vec<u8>>,
+		key: Option<Bin>,
 		descending: bool,
-		key_only: bool,
-		filter: String,
-		cb: TxIterCallback,
-	) -> Option<SResult<Box<Cursor>>>;
+		filter: Filter,
+		cb: Arc<Fn(IterResult)>,
+	) -> Option<IterResult>;
+	// 迭代
+	fn key_iter(
+		&self,
+		key: Option<Bin>,
+		descending: bool,
+		filter: Filter,
+		cb: Arc<Fn(KeyIterResult)>,
+	) -> Option<KeyIterResult>;
 	// 索引迭代
 	fn index(
 		&self,
 		tab: &Atom,
 		index_key: &Atom,
-		key: Option<Vec<u8>>,
+		key: Option<Bin>,
 		descending: bool,
-		filter: String,
-		cb: TxIterCallback,
-	) -> Option<SResult<Box<Cursor>>>;
+		filter: Filter,
+		cb: Arc<Fn(IterResult)>,
+	) -> Option<IterResult>;
 	// 表的大小
 	fn tab_size(&self, cb: TxCallback) -> DBResult;
 }
 
-// 表
+// 表 TODO 想办法取消这个定义，直接在ware中实现
 pub trait Tab {
 	// 创建表事务
 	fn transaction(&self, id: &Guid, writable: bool) -> Arc<TabTxn>;
@@ -108,7 +121,7 @@ pub trait Ware {
 	fn list(&self) -> Vec<Atom>;
 	// 表的元信息
 	fn tab_info(&self, tab_name: &Atom) -> Option<Arc<StructInfo>>;
-	// 打开指定的表，表必须有meta
+	// 打开指定的表，表必须有meta TODO 移到新Trait，并增加Tab的关联类型
 	fn open(
 		&self,
 		tab: &Atom,
@@ -160,12 +173,12 @@ pub enum TxState {
 pub struct TabKV {
 	pub ware: Atom,
 	pub tab: Atom,
-	pub key: Arc<Vec<u8>>,
+	pub key: Bin,
 	pub index: usize,
-	pub value: Option<Arc<Vec<u8>>>,
+	pub value: Option<Bin>,
 }
 impl TabKV {
-	pub fn new(ware: Atom, tab: Atom, key: Arc<Vec<u8>>) -> Self {
+	pub fn new(ware: Atom, tab: Atom, key: Bin) -> Self {
 		TabKV{
 			ware: ware,
 			tab: tab,
@@ -175,9 +188,10 @@ impl TabKV {
 		}
 	}
 }
-pub trait Cursor {
-	fn state(&self) -> SResult<bool>;
-	fn key(&self) -> Arc<Vec<u8>>;
-	fn value(&self) -> Option<Arc<Vec<u8>>>;
-	fn next(&mut self);
+
+pub trait Iter {
+	fn next(&mut self, cb: Arc<Fn(NextResult)>) -> Option<NextResult>;
+}
+pub trait KeyIter {
+	fn next(&mut self, cb: Arc<Fn(KeyNextResult)>) -> Option<KeyNextResult>;
 }

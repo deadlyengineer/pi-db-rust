@@ -3,6 +3,7 @@ extern crate pi_db;
 extern crate fnv;
 
 use pi_db::memery_db::{ArcMutexTab, MemeryTxn, MemeryKV, MemeryTab};
+use pi_db::db::{TabTxn, IterResult, NextResult};
 
 
 use pi_lib::atom::{Atom};
@@ -30,7 +31,7 @@ fn test_memery_db() {
 	let tab2 = &tab;
 
 	//创建事务
-	let txn = MemeryTxn::new(tab2.clone(), &guid);
+	let txn = MemeryTxn::new(tab2.clone(), &guid, true);
 	assert_eq!(txn.borrow_mut().upsert(Arc::new(b"1".to_vec()), Arc::new(b"v1".to_vec())), Ok(()));
 	assert_eq!(txn.borrow_mut().get(Arc::new(b"1".to_vec())), Some(Arc::new(b"v1".to_vec())));
 	assert_eq!(txn.borrow_mut().get(Arc::new(b"1".to_vec())), Some(Arc::new(b"v1".to_vec())));
@@ -38,21 +39,21 @@ fn test_memery_db() {
 	assert_eq!(txn.borrow_mut().commit1(), Ok(()));
 
 	//创建事务(添加key:2 并回滚)
-	let txn = MemeryTxn::new(tab2.clone(), &guid);
+	let txn = MemeryTxn::new(tab2.clone(), &guid, true);
 	assert_eq!(txn.borrow_mut().upsert(Arc::new(b"2".to_vec()), Arc::new(b"v2".to_vec())), Ok(()));
 	assert_eq!(txn.borrow_mut().get(Arc::new(b"1".to_vec())), Some(Arc::new(b"v1".to_vec())));
 	assert_eq!(txn.borrow_mut().prepare1(), Ok(()));
 	assert_eq!(txn.borrow_mut().rollback1(), Ok(()));
 
 	//创建事务
-	let txn = MemeryTxn::new(tab2.clone(), &guid);
+	let txn = MemeryTxn::new(tab2.clone(), &guid, true);
 	assert_eq!(txn.borrow_mut().get(Arc::new(b"1".to_vec())), Some(Arc::new(b"v1".to_vec())));
 	assert_eq!(txn.borrow_mut().get(Arc::new(b"2".to_vec())), None);
 	assert_eq!(txn.borrow_mut().prepare1(), Ok(()));
 	assert_eq!(txn.borrow_mut().commit1(), Ok(()));
 
 	//创建事务
-	let txn = MemeryTxn::new(tab2.clone(), &guid);
+	let txn = MemeryTxn::new(tab2.clone(), &guid, true);
 	assert_eq!(txn.borrow_mut().get(Arc::new(b"1".to_vec())), Some(Arc::new(b"v1".to_vec())));
 	assert_eq!(txn.borrow_mut().get(Arc::new(b"2".to_vec())), None);
 	assert_eq!(txn.borrow_mut().prepare1(), Ok(()));
@@ -77,7 +78,7 @@ fn test_memery_db_p() {
 
 	let start = now_nanos();
 	//创建事务
-	let txn = MemeryTxn::new(tab2.clone(), &guid);
+	let txn = MemeryTxn::new(tab2.clone(), &guid, true);
 	
 	for n in 0..100 {
 		let key = [n];
@@ -85,6 +86,8 @@ fn test_memery_db_p() {
 		assert_eq!(txn.borrow_mut().upsert(Arc::new(key.to_vec()), Arc::new(v)), Ok(()));
 	}
 	assert_eq!(txn.borrow_mut().get(Arc::new([99].to_vec())), Some(Arc::new(Vec::from("vvvvvvvvvvvvvvvvvvvv"))));
+	let mut it=txn.iter(None, false, None, Arc::new(|i:IterResult|{})).unwrap().unwrap();
+	assert_eq!(it.next(Arc::new(|i:NextResult|{})), Some(Ok(Some((Arc::new([0].to_vec()), Arc::new(Vec::from("vvvvvvvvvvvvvvvvvvvv")))))));
 	assert_eq!(txn.borrow_mut().prepare1(), Ok(()));
 	assert_eq!(txn.borrow_mut().commit1(), Ok(()));
 
@@ -112,7 +115,7 @@ fn test_memery_db_p2() {
 	
 	for n in 0..10 {
 		//创建事务
-		let txn = MemeryTxn::new(tab2.clone(), &guid_gen.gen(3));
+		let txn = MemeryTxn::new(tab2.clone(), &guid_gen.gen(3), true);
 		let mut txn = txn.borrow_mut();
 		let key = [n];
 		let v = Vec::from("vvvvvvvvvvvvvvvvvvvv");
