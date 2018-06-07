@@ -419,7 +419,9 @@ impl MemIter{
 			_ => None
 		};
 		root.select(k1, descending, &mut f);
-		vec[..].reverse();
+		if !descending {
+			vec[..].reverse();
+		}
 		MemIter {
 			root: root,
 			key: key,
@@ -457,7 +459,9 @@ impl MemKeyIter{
 			_ => None
 		};
 		root.select(k1, descending, &mut f);
-		vec[..].reverse();
+		if !descending {
+			vec[..].reverse();
+		}
 		MemKeyIter {
 			root: root,
 			key: key,

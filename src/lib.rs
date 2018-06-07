@@ -13,6 +13,5 @@ extern crate fnv;
 pub mod db;
 pub mod mgr;
 pub mod tabs;
-pub mod gray;
 pub mod memery_db;
 pub mod js_db;
