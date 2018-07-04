@@ -12,17 +12,33 @@ use pi_lib::atom::Atom;
 use pi_lib::sinfo::StructInfo;
 use pi_lib::guid::Guid;
 
-use db::{SResult, Tab, TabTxn, Ware};
+use db::{SResult, Tab, TabTxn, OpenTab};
 
 // 表结构及修改日志
-pub struct TabLog {
-	map: OrdMap<Tree<Atom, TabInfo>>,
-	old_map: OrdMap<Tree<Atom, TabInfo>>, // 用于判断mgr中tabs是否修改过
+pub struct TabLog<T: Clone + Tab> {
+	map: OrdMap<Tree<Atom, TabInfo<T>>>,
+	old_map: OrdMap<Tree<Atom, TabInfo<T>>>, // 用于判断mgr中tabs是否修改过
 	meta_names: FnvHashSet<Atom>, //元信息表的名字
 	alter_logs: FnvHashMap<(Atom, usize), Option<Arc<StructInfo>>>, // 记录每个被改过元信息的表
 	rename_logs: FnvHashMap<Atom, (Atom, usize)>, // 新名字->(源名字, 版本号)
 }
-impl TabLog {
+impl<T: Clone + Tab> TabLog<T> {
+	// 列出全部的表
+	pub fn list(&self) -> Vec<Atom> {
+		let mut vec = Vec::with_capacity(self.map.size());
+		let mut f = |e: &Entry<Atom, TabInfo<T>>| {
+			vec.push(e.0.clone());
+		};
+		self.map.select(None, false, &mut f);
+		vec
+	}
+	// 获取指定的表结构
+	pub fn get(&self, tab: &Atom) -> Option<Arc<StructInfo>> {
+		match self.map.get(tab) {
+			Some(t) => Some(t.meta.clone()),
+			_ => None
+		}
+	}
 	// 表的元信息
 	fn replace(&mut self) -> Self {
 		TabLog {
@@ -47,7 +63,7 @@ impl TabLog {
 			Some(v) => v.clone(),
 			_ => (tab_name.clone(), 0),
 		};
-		let mut f = |v: Option<&TabInfo>| {
+		let mut f = |v: Option<&TabInfo<T>>| {
 			match v {
 				Some(ti) => match &meta {
 					Some(si) => ActionResult::Upsert(TabInfo {
@@ -67,7 +83,7 @@ impl TabLog {
 		self.meta_names.insert(tab_name.clone());
 	}
 	// 创建表事务
-	pub fn build<T: Ware>(&self, ware: &T, tab_name: &Atom, id: &Guid, writable: bool, cb: Box<Fn(SResult<Arc<TabTxn>>)>) -> Option<SResult<Arc<TabTxn>>> {
+	pub fn build<W: OpenTab>(&self, ware: &W, tab_name: &Atom, id: &Guid, writable: bool, cb: Box<Fn(SResult<Arc<TabTxn>>)>) -> Option<SResult<Arc<TabTxn>>> {
 		match self.map.get(tab_name) {
 			Some(ref info) => {
 				let tab = {
@@ -75,15 +91,15 @@ impl TabLog {
 					match var.wait {
 						Some(ref mut vec) => {// 表尚未build
 							if vec.len() == 0 {// 第一次调用
-								let var1 = info.init.clone();
+								let init = info.init.clone();
 								match ware.open(tab_name, Box::new(move |tab| {
 									// 异步返回，解锁后设置结果，返回等待函数数组
-									let vec:Vec<Box<Fn(SResult<Arc<Tab>>)>> = {
-										let mut var = var1.lock().unwrap();
-										let vec = mem::replace(var.wait.as_mut().unwrap(), Vec::new());
+									let vec:Vec<Box<Fn(SResult<T>)>> = {
+										let mut var = init.lock().unwrap();
+										let v = mem::replace(var.wait.as_mut().unwrap(), Vec::new());
 										var.tab = tab.clone();
 										var.wait = None;
-										vec
+										v
 									};
 									// 通知所有的等待函数数组
 									for f in vec.into_iter() {
@@ -120,14 +136,14 @@ impl TabLog {
 }
 
 // 表管理器
-pub struct Tabs {
+pub struct Tabs<T: Clone + Tab> {
 	//全部的表结构
-	map: OrdMap<Tree<Atom, TabInfo>>,
+	map: OrdMap<Tree<Atom, TabInfo<T>>>,
 	// 预提交的元信息事务表
-	prepare: FnvHashMap<Guid, TabLog>,
+	prepare: FnvHashMap<Guid, TabLog<T>>,
 }
 
-impl Tabs {
+impl<T: Clone + Tab> Tabs<T> {
 	pub fn new() -> Self {
 		Tabs {
 			map : OrdMap::new(new()),
@@ -137,7 +153,7 @@ impl Tabs {
 	// 列出全部的表
 	pub fn list(&self) -> Vec<Atom> {
 		let mut vec = Vec::with_capacity(self.map.size());
-		let mut f = |e: &Entry<Atom, TabInfo>| {
+		let mut f = |e: &Entry<Atom, TabInfo<T>>| {
 			vec.push(e.0.clone());
 		};
 		self.map.select(None, false, &mut f);
@@ -151,7 +167,7 @@ impl Tabs {
 		}
 	}
 	// 获取当前表结构快照
-	pub fn snapshot(&self) -> TabLog {
+	pub fn snapshot(&self) -> TabLog<T> {
 		TabLog {
 			map: self.map.clone(),
 			old_map: self.map.clone(),
@@ -173,7 +189,7 @@ impl Tabs {
 	}
 
 	// 元信息的预提交
-	pub fn prepare(&mut self, id: &Guid, log: &mut TabLog) -> SResult<()> {
+	pub fn prepare(&mut self, id: &Guid, log: &mut TabLog<T>) -> SResult<()> {
 		// 先检查预提交的交易是否有冲突
 		for val in self.prepare.values() {
 			if val.meta_names.is_disjoint(&log.meta_names) {
@@ -187,7 +203,7 @@ impl Tabs {
 			for name in log.meta_names.iter() {
 				match self.map.get(name) {
 					Some(r1) => match log.old_map.get(name) {
-						Some(r2) if (r1 as *const TabInfo) == (r2 as *const TabInfo) => (),
+						Some(r2) if (r1 as *const TabInfo<T>) == (r2 as *const TabInfo<T>) => (),
 						_ => return Err(String::from("meta parpare conflicted"))
 					}
 					_ => match log.old_map.get(name) {
@@ -221,11 +237,11 @@ impl Tabs {
 //================================ 内部结构和方法
 // 表信息
 #[derive(Clone)]
-struct TabInfo {
+struct TabInfo<T: Clone + Tab> {
 	meta: Arc<StructInfo>,
-	init: Arc<Mutex<TabInit>>,
+	init: Arc<Mutex<TabInit<T>>>,
 }
-impl TabInfo {
+impl<T: Clone + Tab> TabInfo<T> {
 	fn new(meta: Arc<StructInfo>) -> Self {
 		TabInfo{
 			meta: meta,
@@ -237,13 +253,13 @@ impl TabInfo {
 	}
 }
 // 表初始化
-struct TabInit {
-	tab: SResult<Arc<Tab>>,
-	wait: Option<Vec<Box<Fn(SResult<Arc<Tab>>)>>>, // 为None表示tab已经加载
+struct TabInit<T: Clone + Tab> {
+	tab: SResult<T>,
+	wait: Option<Vec<Box<Fn(SResult<T>)>>>, // 为None表示tab已经加载
 }
 //================================ 内部静态方法
 // 表构建函数的回调函数
-fn handle_fn(id: Guid, writable: bool, cb: Box<Fn(SResult<Arc<TabTxn>>)>) -> Box<Fn(SResult<Arc<Tab>>)> {
+fn handle_fn<T: Tab>(id: Guid, writable: bool, cb: Box<Fn(SResult<Arc<TabTxn>>)>) -> Box<Fn(SResult<T>)> {
 	Box::new(move |r| {
 		match r {
 			Ok(tab) => {

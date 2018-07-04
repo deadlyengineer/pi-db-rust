@@ -2,8 +2,8 @@ extern crate pi_lib;
 extern crate pi_db;
 extern crate fnv;
 
-use pi_db::memery_db::{ArcMutexTab, MemeryTxn, MemeryKV, MemeryTab};
-use pi_db::db::{TabTxn, IterResult, NextResult};
+use pi_db::memery_db::{MTab, MemeryTxn};
+use pi_db::db::{Tab, TabTxn, IterResult, NextResult};
 
 
 use pi_lib::atom::{Atom};
@@ -17,14 +17,7 @@ use fnv::FnvHashMap;
 #[test]
 fn test_memery_db() {
 	//打开表
-	let tree:MemeryKV = None;
-	let root= OrdMap::new(tree);
-	let tab = MemeryTab {
-		prepare: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
-		root: root,
-		tab: Atom::from("test"),
-	};
-	let tab: ArcMutexTab = Arc::new(Mutex::new(tab));
+	let tab = MTab::new(&Atom::from("test"));
 	let guid_gen = GuidGen::new(1, 11111);
 	let guid = guid_gen.gen(1);
 
@@ -63,14 +56,7 @@ fn test_memery_db() {
 #[test]
 fn test_memery_db_p() {
 	//打开表
-	let tree:MemeryKV = None;
-	let root= OrdMap::new(tree);
-	let tab = MemeryTab {
-		prepare: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
-		root: root,
-		tab: Atom::from("test2"),
-	};
-	let tab: ArcMutexTab = Arc::new(Mutex::new(tab));
+	let tab = MTab::new(&Atom::from("test2"));
 	let guid_gen = GuidGen::new(2, 22222);
 	let guid = guid_gen.gen(2);
 
@@ -99,14 +85,7 @@ fn test_memery_db_p() {
 fn test_memery_db_p2() {
 	println!("test p2!!!!!!!");
 	//打开表
-	let tree:MemeryKV = None;
-	let root= OrdMap::new(tree);
-	let tab = MemeryTab {
-		prepare: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
-		root: root,
-		tab: Atom::from("test3"),
-	};
-	let tab: ArcMutexTab = Arc::new(Mutex::new(tab));
+	let tab = MTab::new(&Atom::from("test3"));
 	let guid_gen = GuidGen::new(3, 3333);
 
 	let tab2 = &tab;

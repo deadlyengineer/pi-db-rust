@@ -13,9 +13,7 @@ use pi_lib::atom::Atom;
 use pi_lib::sinfo::StructInfo;
 use pi_lib::guid::{Guid, GuidGen};
 
-use tabs::TabLog;
-use db::{SResult, DBResult, IterResult, KeyIterResult, Filter, TabKV, TxCallback, TxQueryCallback, TxState, MetaTxn, TabTxn, Ware};
-
+use db::{SResult, DBResult, IterResult, KeyIterResult, Filter, TabKV, TxCallback, TxQueryCallback, TxState, MetaTxn, TabTxn, Ware, WareSnapshot};
 
 
 // 表库及事务管理器
@@ -227,14 +225,14 @@ impl Tr {
 	// 列出指定库的所有表
 	pub fn list(&self, ware_name: &Atom) -> Option<Vec<Atom>> {
 		match self.0.lock().unwrap().ware_log_map.get(ware_name) {
-			Some((ware, _)) => Some(ware.list()),
+			Some(ware) => Some(ware.list()),
 			_ => None
 		}
 	}
 	// 表的元信息
 	pub fn tab_info(&self, ware_name:&Atom, tab_name: &Atom) -> Option<Arc<StructInfo>> {
 		match self.0.lock().unwrap().ware_log_map.get(ware_name) {
-			Some((ware, _)) => ware.tab_info(tab_name),
+			Some(ware) => ware.tab_info(tab_name),
 			_ => None
 		}
 	}
@@ -301,7 +299,7 @@ impl Manager {
 		// 遍历ware_map, 将每个Ware的快照TabLog记录下来
 		let mut map = FnvHashMap::with_capacity_and_hasher(ware_map.0.size() * 3 / 2, Default::default());
 		let mut f = |e: &Entry<Atom, Arc<Ware>>| {
-			map.insert(e.0.clone(), (e.1.clone(), e.1.snapshot()));
+			map.insert(e.0.clone(), e.1.snapshot());
 		};
 		ware_map.0.select(None, false, &mut f);
 		let tr = Tr(Arc::new(Mutex::new(Tx {
@@ -355,7 +353,7 @@ struct Tx {
 	writable: bool,
 	timeout: usize, // 子事务的预提交的超时时间, TODO 取提交的库的最大超时时间
 	id: Guid,
-	ware_log_map: FnvHashMap<Atom, (Arc<Ware>, TabLog)>,// 库名对应库及其所有表的快照
+	ware_log_map: FnvHashMap<Atom, Arc<WareSnapshot>>,// 库名对应库快照
 	state: TxState,
 	_timer_ref: usize,
 	tab_txns: FnvHashMap<Atom, Arc<TabTxn>>, //表事务表
@@ -370,8 +368,7 @@ impl Tx {
 		let alter_len = self.meta_txns.len();
 		if alter_len > 0 {
 			for ware in self.meta_txns.keys() {
-				let (ware, log) = self.ware_log_map.get_mut(ware).unwrap();
-				match ware.prepare(&self.id, log) {
+				match self.ware_log_map.get_mut(ware).unwrap().prepare(&self.id) {
 					Err(s) =>{
 						self.state = TxState::PreparFail;
 						return Some(Err(s))
@@ -440,7 +437,7 @@ impl Tx {
 		let alter_len = self.meta_txns.len();
 		if alter_len > 0 {
 			for ware in self.meta_txns.keys() {
-				self.ware_log_map.get(ware).unwrap().0.commit(&self.id);
+				self.ware_log_map.get(ware).unwrap().commit(&self.id);
 			}
 		}
 		let len = self.tab_txns.len() + alter_len;
@@ -457,7 +454,7 @@ impl Tx {
 			}
 		});
 
-		//处理每个表的预提交
+		//处理每个表的提交
 		for val in self.tab_txns.values_mut() {
 			match val.commit(bf.clone()) {
 				Some(r) => {
@@ -472,7 +469,7 @@ impl Tx {
 				_ => ()
 			}
 		}
-		//处理tab alter的预提交
+		//处理tab alter的提交
 		for val in self.meta_txns.values_mut() {
 			match val.commit(bf.clone()) {
 				Some(r) => {
@@ -496,7 +493,7 @@ impl Tx {
 		let alter_len = self.meta_txns.len();
 		if alter_len > 0 {
 			for ware in self.meta_txns.keys() {
-				self.ware_log_map.get(ware).unwrap().0.rollback(&self.id);
+				self.ware_log_map.get(ware).unwrap().rollback(&self.id);
 			}
 		}
 		let len = self.tab_txns.len() + alter_len;
@@ -797,11 +794,11 @@ impl Tx {
 	// 新增 修改 删除 表
 	fn alter(&mut self, tr: &Tr, ware_name: &Atom, tab_name: &Atom, meta: Option<Arc<StructInfo>>, cb: TxCallback) -> DBResult {
 		self.state = TxState::Doing;
-		let ware = match self.ware_log_map.get_mut(ware_name) {
-			Some((ware, log)) => match ware.check(tab_name, &meta) { // 检查
+		let ware = match self.ware_log_map.get(ware_name) {
+			Some(w) => match w.check(tab_name, &meta) { // 检查
 				Ok(_) =>{
-					log.alter(tab_name, meta.clone());
-					ware
+					w.alter(tab_name, meta.clone());
+					w
 				},
 				Err(s) => return self.single_result_err(Err(s))
 			},
@@ -809,7 +806,7 @@ impl Tx {
 		};
 		let id = &self.id;
 		let txn = self.meta_txns.entry(ware_name.clone()).or_insert_with(|| {
-			ware.meta_txn(id)
+			ware.meta_txn(&id)
 		}).clone();
 		let tr1 = tr.clone();
 		let bf = Arc::new(move |r| {
@@ -827,8 +824,8 @@ impl Tx {
 	fn build(&mut self, ware_name: &Atom, tab_name: &Atom, cb: Box<Fn(SResult<Arc<TabTxn>>)>) -> Option<SResult<Arc<TabTxn>>> {
 		let txn = match self.tab_txns.get(tab_name) {
 			Some(r) => return Some(Ok(r.clone())),
-			_ => match self.ware_log_map.get_mut(ware_name) {
-				Some((ware, tab_log)) => match ware.tab_txn(&tab_log, tab_name, &self.id, self.writable, cb) {
+			_ => match self.ware_log_map.get(ware_name) {
+				Some(ware) => match ware.tab_txn(tab_name, &self.id, self.writable, cb) {
 					Some(r) => match r {
 						Ok(txn) => txn,
 						err => {
@@ -1034,7 +1031,7 @@ impl Decode for Player{
 fn test_memery_db_mgr(){
 
 	let mgr = Mgr::new(GuidGen::new(1,1));
-	mgr.register(Atom::from("memery"), Arc::new(memery_db::MemeryDB::new()));
+	mgr.register(Atom::from("memery"), Arc::new(memery_db::DB::new()));
 	let mgr = Arc::new(mgr);
 
 	let tr = mgr.transaction(true);

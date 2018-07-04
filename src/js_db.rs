@@ -8,7 +8,7 @@ use pi_lib::atom::Atom;
 use pi_lib::sinfo::StructInfo;
 use std::sync::Arc;
 use std::ops::Deref;
-use memery_db::MemeryDB;
+use memery_db::DB;
 
 // 查询
 pub fn query(tr: &Tr, arr: Vec<(String, String, Vec<u8>)>, lock_time: Option<usize>, readonly: bool, cb: Arc<Fn(SResult<Vec<(String, String, Vec<u8>, Vec<u8>)>>)> )->Option<SResult<Vec<(String, String, Vec<u8>, Vec<u8>)>>>{
@@ -39,7 +39,7 @@ pub fn modify(tr: &Tr, arr: Vec<(String, String, Vec<u8>, Vec<u8>)>, lock_time: 
 }
 
 // 注册内存数据库
-pub fn register_memery_db(mgr: &Mgr, prefix: String, ware: MemeryDB) -> bool {
+pub fn register_memery_db(mgr: &Mgr, prefix: String, ware: DB) -> bool {
 	mgr.register(Atom::from(prefix), Arc::new(ware))
 }
 
