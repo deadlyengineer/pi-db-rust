@@ -10,17 +10,23 @@ use pi_lib::atom::Atom;
 use pi_lib::guid::Guid;
 use pi_lib::sinfo::StructInfo;
 
-use tabs::TabLog;
 
 // 系统表的前缀
 pub const PRIFIX: &str = "_$";
 
+pub type Bin = Arc<Vec<u8>>;
+
 pub type SResult<T> = Result<T, String>;
 pub type DBResult = Option<SResult<()>>;
+pub type IterResult = SResult<Box<Iter>>;
+pub type KeyIterResult = SResult<Box<KeyIter>>;
+pub type NextResult = SResult<Option<(Bin, Bin)>>;
+pub type KeyNextResult = SResult<Option<Bin>>;
 
 pub type TxCallback = Arc<Fn(SResult<()>)>;
 pub type TxQueryCallback = Arc<Fn(SResult<Vec<TabKV>>)>;
-pub type TxIterCallback = Arc<Fn(SResult<Box<Cursor>>)>;
+
+pub type Filter = Option<Arc<Fn(Bin)-> Option<Bin>>>;
 
 //事务
 pub trait Txn {
@@ -51,53 +57,55 @@ pub trait TabTxn : Txn{
 	// 迭代
 	fn iter(
 		&self,
-		tab: &Atom,
-		key: Option<Vec<u8>>,
+		key: Option<Bin>,
 		descending: bool,
-		key_only: bool,
-		filter: String,
-		cb: TxIterCallback,
-	) -> Option<SResult<Box<Cursor>>>;
+		filter: Filter,
+		cb: Arc<Fn(IterResult)>,
+	) -> Option<IterResult>;
+	// 迭代
+	fn key_iter(
+		&self,
+		key: Option<Bin>,
+		descending: bool,
+		filter: Filter,
+		cb: Arc<Fn(KeyIterResult)>,
+	) -> Option<KeyIterResult>;
 	// 索引迭代
 	fn index(
 		&self,
 		tab: &Atom,
 		index_key: &Atom,
-		key: Option<Vec<u8>>,
+		key: Option<Bin>,
 		descending: bool,
-		filter: String,
-		cb: TxIterCallback,
-	) -> Option<SResult<Box<Cursor>>>;
+		filter: Filter,
+		cb: Arc<Fn(IterResult)>,
+	) -> Option<IterResult>;
 	// 表的大小
 	fn tab_size(&self, cb: TxCallback) -> DBResult;
 }
 
-// 表
+// 每个Ware的元信息事务
+pub trait MetaTxn : Txn {
+	// 创建表、修改指定表的元数据
+	fn alter(&self, tab: &Atom, meta: Option<Arc<StructInfo>>, cb: TxCallback) -> DBResult;
+	// 快照拷贝表
+	fn snapshot(&self, tab: &Atom, from: &Atom, cb: TxCallback) -> DBResult;
+	// 修改指定表的名字
+	fn rename(&self, tab: &Atom, new_name: &Atom, cb: TxCallback) -> DBResult;
+}
+
+// 表定义
 pub trait Tab {
+	fn new(tab: &Atom) -> Self;
 	// 创建表事务
 	fn transaction(&self, id: &Guid, writable: bool) -> Arc<TabTxn>;
 }
 
-// 每个Ware的元信息事务
-pub trait MetaTxn : Txn {
-
-	// 创建表、修改指定表的元数据
-	fn alter(
-		&self,
-		tab: &Atom,
-		meta: Option<Arc<StructInfo>>,
-		cb: TxCallback,
-	) -> DBResult;
-	// 修改指定表的名字
-	fn rename(
-		&self,
-		tab: &Atom,
-		new_name: &Atom,
-		cb: TxCallback,
-	) -> DBResult;
-
+// 打开表的接口定义
+pub trait OpenTab {
+	// 打开指定的表，表必须有meta
+	fn open<'a, T: Tab>(&self, tab: &Atom, cb: Box<Fn(SResult<T>) + 'a>) -> Option<SResult<T>>;
 }
-
 // 库
 pub trait Ware {
 	// 拷贝全部的表
@@ -108,32 +116,29 @@ pub trait Ware {
 	fn list(&self) -> Vec<Atom>;
 	// 表的元信息
 	fn tab_info(&self, tab_name: &Atom) -> Option<Arc<StructInfo>>;
-	// 打开指定的表，表必须有meta
-	fn open(
-		&self,
-		tab: &Atom,
-		cb: Box<Fn(SResult<Arc<Tab>>)>,
-	) -> Option<SResult<Arc<Tab>>>;
-	// 获取当前表结构快照
-	fn snapshot(&self) -> TabLog;
+	// 创建当前表结构快照
+	fn snapshot(&self) -> Arc<WareSnapshot>;
+}
+// 库快照
+pub trait WareSnapshot {
+	// 列出全部的表
+	fn list(&self) -> Vec<Atom>;
+	// 表的元信息
+	fn tab_info(&self, tab_name: &Atom) -> Option<Arc<StructInfo>>;
+	// 检查该表是否可以创建
+	fn check(&self, tab: &Atom, meta: &Option<Arc<StructInfo>>) -> SResult<()>;
+	// 新增 修改 删除 表
+	fn alter(&self, tab_name: &Atom, meta: Option<Arc<StructInfo>>);
 	// 创建指定表的表事务
 	fn tab_txn(&self, tab_name: &Atom, id: &Guid, writable: bool, cb: Box<Fn(SResult<Arc<TabTxn>>)>) -> Option<SResult<Arc<TabTxn>>>;
-
-	// 检查该表是否可以创建
-	fn check(
-		&self,
-		tab: &Atom,
-		meta: &Option<Arc<StructInfo>>,
-	) -> SResult<()>;
 	// 创建一个meta事务
 	fn meta_txn(&self, id: &Guid) -> Arc<MetaTxn>;
 	// 元信息的预提交
-	fn prepare(&self, id: &Guid, log: &mut TabLog) -> SResult<()>;
+	fn prepare(&self, id: &Guid) -> SResult<()>;
 	// 元信息的提交
 	fn commit(&self, id: &Guid);
 	// 回滚
 	fn rollback(&self, id: &Guid);
-
 }
 
 #[derive(Clone)]
@@ -160,12 +165,12 @@ pub enum TxState {
 pub struct TabKV {
 	pub ware: Atom,
 	pub tab: Atom,
-	pub key: Arc<Vec<u8>>,
+	pub key: Bin,
 	pub index: usize,
-	pub value: Option<Arc<Vec<u8>>>,
+	pub value: Option<Bin>,
 }
 impl TabKV {
-	pub fn new(ware: Atom, tab: Atom, key: Arc<Vec<u8>>) -> Self {
+	pub fn new(ware: Atom, tab: Atom, key: Bin) -> Self {
 		TabKV{
 			ware: ware,
 			tab: tab,
@@ -175,9 +180,10 @@ impl TabKV {
 		}
 	}
 }
-pub trait Cursor {
-	fn state(&self) -> SResult<bool>;
-	fn key(&self) -> Arc<Vec<u8>>;
-	fn value(&self) -> Option<Arc<Vec<u8>>>;
-	fn next(&mut self);
+
+pub trait Iter {
+	fn next(&mut self, cb: Arc<Fn(NextResult)>) -> Option<NextResult>;
+}
+pub trait KeyIter {
+	fn next(&mut self, cb: Arc<Fn(KeyNextResult)>) -> Option<KeyNextResult>;
 }
