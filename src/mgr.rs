@@ -15,7 +15,6 @@ use pi_lib::guid::{Guid, GuidGen};
 
 use db::{SResult, DBResult, IterResult, KeyIterResult, Filter, TabKV, TxCallback, TxQueryCallback, TxState, MetaTxn, TabTxn, Ware, WareSnapshot};
 
-
 // 表库及事务管理器
 #[derive(Clone)]
 pub struct Mgr(Arc<Mutex<Manager>>, Arc<Mutex<WareMap>>, Arc<GuidGen>, Statistics);
@@ -992,8 +991,6 @@ fn single_result_err(r: SResult<()>, tr: &Tr, cb: &TxCallback) {
 		cb(r)
 	}
 }
-
-
 
 #[cfg(test)]
 use memery_db;
