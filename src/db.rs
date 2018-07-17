@@ -18,10 +18,9 @@ pub type Bin = Arc<Vec<u8>>;
 
 pub type SResult<T> = Result<T, String>;
 pub type DBResult = Option<SResult<()>>;
-pub type IterResult = SResult<Box<Iter>>;
-pub type KeyIterResult = SResult<Box<KeyIter>>;
-pub type NextResult = SResult<Option<(Bin, Bin)>>;
-pub type KeyNextResult = SResult<Option<Bin>>;
+pub type IterResult = SResult<Box<Iter<Item = (Bin, Bin)>>>;
+pub type KeyIterResult = SResult<Box<Iter<Item = Bin>>>;
+pub type NextResult<T> = SResult<Option<T>>;
 
 pub type TxCallback = Arc<Fn(SResult<()>)>;
 pub type TxQueryCallback = Arc<Fn(SResult<Vec<TabKV>>)>;
@@ -113,7 +112,7 @@ pub trait Ware {
 	// 获取该库对预提交后的处理超时时间, 事务会用最大超时时间来预提交
 	fn timeout(&self) -> usize;
 	// 列出全部的表
-	fn list(&self) -> Vec<Atom>;
+	fn list(&self) -> Box<Iterator<Item=Atom>>;
 	// 表的元信息
 	fn tab_info(&self, tab_name: &Atom) -> Option<Arc<StructInfo>>;
 	// 创建当前表结构快照
@@ -122,7 +121,7 @@ pub trait Ware {
 // 库快照
 pub trait WareSnapshot {
 	// 列出全部的表
-	fn list(&self) -> Vec<Atom>;
+	fn list(&self) -> Box<Iterator<Item=Atom>>;
 	// 表的元信息
 	fn tab_info(&self, tab_name: &Atom) -> Option<Arc<StructInfo>>;
 	// 检查该表是否可以创建
@@ -182,8 +181,6 @@ impl TabKV {
 }
 
 pub trait Iter {
-	fn next(&mut self, cb: Arc<Fn(NextResult)>) -> Option<NextResult>;
-}
-pub trait KeyIter {
-	fn next(&mut self, cb: Arc<Fn(KeyNextResult)>) -> Option<KeyNextResult>;
+	type Item;
+	fn next(&mut self, cb: Arc<Fn(NextResult<Self::Item>)>) -> Option<NextResult<Self::Item>>;
 }

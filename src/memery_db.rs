@@ -5,13 +5,13 @@ use std::mem;
 
 use fnv::FnvHashMap;
 
-use pi_lib::ordmap::{OrdMap, Entry};
+use pi_lib::ordmap::{OrdMap, Entry, Iter as OIter, Keys};
 use pi_lib::asbtree::{Tree};
 use pi_lib::atom::{Atom};
 use pi_lib::guid::Guid;
 use pi_lib::sinfo::StructInfo;
 
-use db::{Bin, TabKV, SResult, DBResult, IterResult, KeyIterResult, NextResult, KeyNextResult, TxCallback, TxQueryCallback, Txn, TabTxn, MetaTxn, Tab, OpenTab, Ware, WareSnapshot, Filter, TxState, Iter, KeyIter};
+use db::{Bin, TabKV, SResult, DBResult, IterResult, KeyIterResult, NextResult, TxCallback, TxQueryCallback, Txn, TabTxn, MetaTxn, Tab, OpenTab, Ware, WareSnapshot, Filter, TxState, Iter};
 use tabs::{TabLog, Tabs};
 
 
@@ -53,8 +53,8 @@ impl Ware for DB {
 	// 	self.clone()
 	// }
 	// 列出全部的表
-	fn list(&self) -> Vec<Atom> {
-		self.0.read().unwrap().list()
+	fn list(&self) -> Box<Iterator<Item=Atom>> {
+		Box::new(self.0.read().unwrap().list())
 	}
 	// 获取该库对预提交后的处理超时时间, 事务会用最大超时时间来预提交
 	fn timeout(&self) -> usize {
@@ -75,15 +75,15 @@ pub struct DBSnapshot(DB, RefCell<TabLog<MTab>>);
 
 impl WareSnapshot for DBSnapshot {
 	// 列出全部的表
-	fn list(&self) -> Vec<Atom> {
-		self.1.borrow().list()
+	fn list(&self) -> Box<Iterator<Item=Atom>> {
+		Box::new(self.1.borrow().list())
 	}
 	// 表的元信息
 	fn tab_info(&self, tab_name: &Atom) -> Option<Arc<StructInfo>> {
 		self.1.borrow().get(tab_name)
 	}
 	// 检查该表是否可以创建
-	fn check(&self, tab: &Atom, meta: &Option<Arc<StructInfo>>) -> SResult<()> {
+	fn check(&self, _tab: &Atom, _meta: &Option<Arc<StructInfo>>) -> SResult<()> {
 		Ok(())
 	}
 	// 新增 修改 删除 表
@@ -361,9 +361,13 @@ impl TabTxn for RefMemeryTxn {
 		key: Option<Bin>,
 		descending: bool,
 		filter: Filter,
-		cb: Arc<Fn(IterResult)>,
+		_cb: Arc<Fn(IterResult)>,
 	) -> Option<IterResult> {
-		Some(Ok(Box::new(MemIter::new(self.borrow_mut().root.clone(), key, descending, filter))))
+		let b = self.borrow_mut();
+		Some(Ok(Box::new(MemIter::new(b.root.clone(), b.root.iter(match &key {
+			&Some(ref k) => Some(k),
+			None => None,
+		} , descending), filter))))
 	}
 	// 迭代
 	fn key_iter(
@@ -371,9 +375,13 @@ impl TabTxn for RefMemeryTxn {
 		key: Option<Bin>,
 		descending: bool,
 		filter: Filter,
-		cb: Arc<Fn(KeyIterResult)>,
+		_cb: Arc<Fn(KeyIterResult)>,
 	) -> Option<KeyIterResult> {
-		Some(Ok(Box::new(MemKeyIter::new(self.borrow_mut().root.clone(), key, descending, filter))))
+		let b = self.borrow_mut();
+		Some(Ok(Box::new(MemKeyIter::new(b.root.clone(), b.root.keys(match &key {
+			&Some(ref k) => Some(k),
+			None => None,
+		}, descending), filter))))
 	}
 	// 索引迭代
 	fn index(
@@ -414,99 +422,72 @@ struct MemeryTab {
 	pub tab: Atom,
 }
 
-// 内存迭代器
-struct MemIter {
-	root: BinMap,
-	key: Option<Bin>,
-	descending: bool,
-	filter: Filter,
-	arr: SResult<Vec<(Bin, Bin)>>,
+pub struct MemIter{
+	_root: BinMap,
+	_filter: Filter,
+	point: usize,
 }
+
 impl MemIter{
-	fn new(root: BinMap, key: Option<Bin>, descending: bool, filter: Filter) -> Self {
-		let mut vec = Vec::new();
-		let mut f = |e: &Entry<Bin, Bin>| {
-			vec.push((e.0.clone(), e.1.clone()));
-		};
-		let k1 = match key {
-			Some(ref b) => Some(b),
-			_ => None
-		};
-		root.select(k1, descending, &mut f);
-		if !descending {
-			vec[..].reverse();
-		}
-		MemIter {
-			root: root,
-			key: key,
-			descending: descending,
-			filter: filter,
-			arr: Ok(vec),
-		}
-	}
-}
-impl Iter for MemIter{
-	fn next(&mut self, _cb: Arc<Fn(NextResult)>) -> Option<NextResult> {
-		match &mut self.arr {
-			&mut Ok(ref mut v) => Some(Ok(v.pop())),
-			Err(s) => Some(Err(s.clone()))
+	pub fn new<'a>(root: BinMap, it: <Tree<Bin, Bin> as OIter<'a>>::IterType, filter: Filter) -> MemIter{
+		MemIter{
+			_root: root,
+			_filter: filter,
+			point: Box::into_raw(Box::new(it)) as usize
 		}
 	}
 }
 
-// 内存迭代器
-struct MemKeyIter {
-	root: BinMap,
-	key: Option<Bin>,
-	descending: bool,
-	filter: Filter,
-	arr: SResult<Vec<Bin>>,
+impl Iter for MemIter{
+	type Item = (Bin, Bin);
+	fn next(&mut self, _cb: Arc<Fn(NextResult<Self::Item>)>) -> Option<NextResult<Self::Item>>{
+		Some(Ok(match unsafe{Box::from_raw(self.point as *mut <Tree<Bin, Bin> as OIter<'_>>::IterType)}.next() {
+			Some(&Entry(ref k, ref v)) => Some((k.clone(), v.clone())),
+			None => None,
+		}))
+	}
 }
+
+pub struct MemKeyIter{
+	_root: BinMap,
+	_filter: Filter,
+	point: usize
+}
+
 impl MemKeyIter{
-	fn new(root: BinMap, key: Option<Bin>, descending: bool, filter: Filter) -> Self {
-		let mut vec = Vec::new();
-		let mut f = |e: &Entry<Bin, Bin>| {
-			vec.push(e.0.clone());
-		};
-		let k1 = match key {
-			Some(ref b) => Some(b),
-			_ => None
-		};
-		root.select(k1, descending, &mut f);
-		if !descending {
-			vec[..].reverse();
-		}
-		MemKeyIter {
-			root: root,
-			key: key,
-			descending: descending,
-			filter: filter,
-			arr: Ok(vec),
+	pub fn new(root: BinMap, keys: Keys<'_, Tree<Bin, Bin>>, filter: Filter) -> MemKeyIter{
+		MemKeyIter{
+			_root: root,
+			_filter: filter,
+			point: Box::into_raw(Box::new(keys)) as usize
 		}
 	}
 }
-impl KeyIter for MemKeyIter{
-	fn next(&mut self, _cb: Arc<Fn(KeyNextResult)>) -> Option<KeyNextResult> {
-		match &mut self.arr {
-			&mut Ok(ref mut v) => Some(Ok(v.pop())),
-			Err(s) => Some(Err(s.clone()))
-		}
+
+impl Iter for MemKeyIter{
+	type Item = Bin;
+	fn next(&mut self, _cb: Arc<Fn(NextResult<Self::Item>)>) -> Option<NextResult<Self::Item>>{
+		Some(Ok(match unsafe{Box::from_raw(self.point as *mut Keys<'_, Tree<Bin, Bin>>)}.next() {
+			Some(k) => Some(k.clone()),
+			None => None,
+		}))
 	}
 }
+
 #[derive(Clone)]
 pub struct MemeryMetaTxn();
 
 impl MetaTxn for MemeryMetaTxn {
 	// 创建表、修改指定表的元数据
-	fn alter(&self, tab: &Atom, meta: Option<Arc<StructInfo>>, cb: TxCallback) -> DBResult{
+	fn alter(&self, _tab: &Atom, _meta: Option<Arc<StructInfo>>, _cb: TxCallback) -> DBResult{
 		Some(Ok(()))
 	}
 	// 快照拷贝表
-	fn snapshot(&self, tab: &Atom, from: &Atom, cb: TxCallback) -> DBResult{
+	fn snapshot(&self, _tab: &Atom, _from: &Atom, _cb: TxCallback) -> DBResult{
 		Some(Ok(()))
 	}
 	// 修改指定表的名字
-	fn rename(&self, tab: &Atom, new_name: &Atom, cb: TxCallback) -> DBResult {
+	fn rename(&self, _tab: &Atom, _new_name: &Atom, _cb: TxCallback) -> DBResult {
 		Some(Ok(()))
 	}
 }
