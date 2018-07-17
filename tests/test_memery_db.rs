@@ -3,16 +3,14 @@ extern crate pi_db;
 extern crate fnv;
 
 use pi_db::memery_db::{MTab, MemeryTxn};
-use pi_db::db::{Tab, TabTxn, IterResult, NextResult};
+use pi_db::db::{Tab, TabTxn, IterResult, NextResult, Bin};
 
 
 use pi_lib::atom::{Atom};
-use pi_lib::ordmap::{OrdMap};
 use pi_lib::guid::{GuidGen};
 use pi_lib::time::now_nanos;
 
-use std::sync::{Arc, Mutex};
-use fnv::FnvHashMap;
+use std::sync::{Arc};
 
 #[test]
 fn test_memery_db() {
@@ -72,8 +70,8 @@ fn test_memery_db_p() {
 		assert_eq!(txn.borrow_mut().upsert(Arc::new(key.to_vec()), Arc::new(v)), Ok(()));
 	}
 	assert_eq!(txn.borrow_mut().get(Arc::new([99].to_vec())), Some(Arc::new(Vec::from("vvvvvvvvvvvvvvvvvvvv"))));
-	let mut it=txn.iter(None, false, None, Arc::new(|i:IterResult|{})).unwrap().unwrap();
-	assert_eq!(it.next(Arc::new(|i:NextResult|{})), Some(Ok(Some((Arc::new([0].to_vec()), Arc::new(Vec::from("vvvvvvvvvvvvvvvvvvvv")))))));
+	let mut it=txn.iter(None, false, None, Arc::new(|_i:IterResult|{})).unwrap().unwrap();
+	assert_eq!(it.next(Arc::new(|_i:NextResult<(Bin, Bin)>|{})), Some(Ok(Some((Arc::new([0].to_vec()), Arc::new(Vec::from("vvvvvvvvvvvvvvvvvvvv")))))));
 	assert_eq!(txn.borrow_mut().prepare1(), Ok(()));
 	assert_eq!(txn.borrow_mut().commit1(), Ok(()));
 

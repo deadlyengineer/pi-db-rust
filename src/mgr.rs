@@ -224,7 +224,13 @@ impl Tr {
 	// 列出指定库的所有表
 	pub fn list(&self, ware_name: &Atom) -> Option<Vec<Atom>> {
 		match self.0.lock().unwrap().ware_log_map.get(ware_name) {
-			Some(ware) => Some(ware.list()),
+			Some(ware) => {
+				let mut arr = Vec::new();
+				for e in ware.list(){
+					arr.push(e.clone())
+				}
+				Some(arr)
+			},
 			_ => None
 		}
 	}
@@ -297,10 +303,9 @@ impl Manager {
 	fn transaction(&mut self, ware_map: WareMap, writable: bool, id: Guid) -> Tr {
 		// 遍历ware_map, 将每个Ware的快照TabLog记录下来
 		let mut map = FnvHashMap::with_capacity_and_hasher(ware_map.0.size() * 3 / 2, Default::default());
-		let mut f = |e: &Entry<Atom, Arc<Ware>>| {
-			map.insert(e.0.clone(), e.1.snapshot());
-		};
-		ware_map.0.select(None, false, &mut f);
+		for Entry(k, v) in ware_map.0.iter(None, false){
+			map.insert(k.clone(), v.snapshot());
+		}
 		let tr = Tr(Arc::new(Mutex::new(Tx {
 			writable: writable,
 			timeout: TIMEOUT,

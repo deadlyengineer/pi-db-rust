@@ -6,7 +6,7 @@ use std::mem;
 
 use fnv::{FnvHashMap, FnvHashSet};
 
-use pi_lib::ordmap::{OrdMap, Entry, ActionResult};
+use pi_lib::ordmap::{OrdMap, ActionResult, Keys};
 use pi_lib::asbtree::{Tree, new};
 use pi_lib::atom::Atom;
 use pi_lib::sinfo::StructInfo;
@@ -24,13 +24,8 @@ pub struct TabLog<T: Clone + Tab> {
 }
 impl<T: Clone + Tab> TabLog<T> {
 	// 列出全部的表
-	pub fn list(&self) -> Vec<Atom> {
-		let mut vec = Vec::with_capacity(self.map.size());
-		let mut f = |e: &Entry<Atom, TabInfo<T>>| {
-			vec.push(e.0.clone());
-		};
-		self.map.select(None, false, &mut f);
-		vec
+	pub fn list(&self) -> TabIter<T> {
+		TabIter::new(self.map.clone(), self.map.keys(None, false))
 	}
 	// 获取指定的表结构
 	pub fn get(&self, tab: &Atom) -> Option<Arc<StructInfo>> {
@@ -135,6 +130,31 @@ impl<T: Clone + Tab> TabLog<T> {
 	}
 }
 
+pub struct TabIter<T: Clone + Tab>{
+	_root: OrdMap<Tree<Atom, TabInfo<T>>>,
+	point: usize,
+}
+
+impl<'a, T: 'a + Clone + Tab> TabIter<T>{
+	pub fn new(root: OrdMap<Tree<Atom, TabInfo<T>>>, it: Keys<'a, Tree<Atom, TabInfo<T>>>) -> TabIter<T>{
+		TabIter{
+			_root: root.clone(),
+			point: Box::into_raw(Box::new(it)) as usize
+		}
+	}
+}
+
+impl<T: Clone + Tab> Iterator for TabIter<T>{
+	type Item = Atom;
+	fn next(&mut self) -> Option<Self::Item>{
+		match unsafe{Box::from_raw(self.point as *mut Keys<'static, Tree<Atom, TabInfo<T>>>)}.next() {
+			Some(k) => Some(k.clone()),
+			None => None,
+		}
+	}
+}
+
+
 // 表管理器
 pub struct Tabs<T: Clone + Tab> {
 	//全部的表结构
@@ -151,13 +171,8 @@ impl<T: Clone + Tab> Tabs<T> {
 		}
 	}
 	// 列出全部的表
-	pub fn list(&self) -> Vec<Atom> {
-		let mut vec = Vec::with_capacity(self.map.size());
-		let mut f = |e: &Entry<Atom, TabInfo<T>>| {
-			vec.push(e.0.clone());
-		};
-		self.map.select(None, false, &mut f);
-		vec
+	pub fn list(&self) -> TabIter<T> {
+		TabIter::new(self.map.clone(), self.map.keys(None, false))
 	}
 	// 获取指定的表结构
 	pub fn get(&self, tab: &Atom) -> Option<Arc<StructInfo>> {
@@ -237,7 +252,7 @@ impl<T: Clone + Tab> Tabs<T> {
 //================================ 内部结构和方法
 // 表信息
 #[derive(Clone)]
-struct TabInfo<T: Clone + Tab> {
+pub struct TabInfo<T: Clone + Tab> {
 	meta: Arc<StructInfo>,
 	init: Arc<Mutex<TabInit<T>>>,
 }
