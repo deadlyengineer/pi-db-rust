@@ -5,10 +5,15 @@
 use std::result::Result;
 use std::sync::Arc;
 use std::vec::Vec;
+use std::ops::{DerefMut, Deref};
+use std::cmp::{Ord, Eq, PartialOrd, PartialEq, Ordering};
+
+use fnv::FnvHashMap;
 
 use pi_lib::atom::Atom;
 use pi_lib::guid::Guid;
 use pi_lib::sinfo::StructInfo;
+use pi_lib::bon::ReadBuffer;
 
 
 // 系统表的前缀
@@ -18,6 +23,7 @@ pub type Bin = Arc<Vec<u8>>;
 
 pub type SResult<T> = Result<T, String>;
 pub type DBResult = Option<SResult<()>>;
+pub type CommitResult = Option<SResult<FnvHashMap<Bin, RwLog>>>;
 pub type IterResult = SResult<Box<Iter<Item = (Bin, Bin)>>>;
 pub type KeyIterResult = SResult<Box<Iter<Item = Bin>>>;
 pub type NextResult<T> = SResult<Option<T>>;
@@ -34,7 +40,7 @@ pub trait Txn {
 	// 预提交一个事务
 	fn prepare(&self, timeout:usize, cb: TxCallback) -> DBResult;
 	// 提交一个事务
-	fn commit(&self, cb: TxCallback) -> DBResult;
+	fn commit(&self, cb: TxCallback) -> CommitResult;
 	// 回滚一个事务
 	fn rollback(&self, cb: TxCallback) -> DBResult;
 }
@@ -98,6 +104,8 @@ pub trait Tab {
 	fn new(tab: &Atom) -> Self;
 	// 创建表事务
 	fn transaction(&self, id: &Guid, writable: bool) -> Arc<TabTxn>;
+	
+	//fn get_prepare() -> (Atom, Bin, Option<Bin>); //取到预提交信息， （tab_name, key, value）
 }
 
 // 打开表的接口定义
@@ -108,7 +116,7 @@ pub trait OpenTab {
 // 库
 pub trait Ware {
 	// 拷贝全部的表
-	//fn tabs_clone(&self) -> Self;
+	fn tabs_clone(&self) -> Arc<Ware>;
 	// 获取该库对预提交后的处理超时时间, 事务会用最大超时时间来预提交
 	fn timeout(&self) -> usize;
 	// 列出全部的表
@@ -183,4 +191,90 @@ impl TabKV {
 pub trait Iter {
 	type Item;
 	fn next(&mut self, cb: Arc<Fn(NextResult<Self::Item>)>) -> Option<NextResult<Self::Item>>;
+}
+
+#[derive(Clone, Debug)]
+pub enum RwLog {
+	Read,
+	Write(Option<Bin>),
+	Meta(Option<Bin>),
+}
+
+pub struct Prepare(FnvHashMap<Guid, FnvHashMap<Bin, RwLog>>);
+
+impl Prepare{
+	pub fn new(map: FnvHashMap<Guid, FnvHashMap<Bin, RwLog>>) -> Prepare{
+		Prepare(map)
+	}
+
+    //检查预提交是否冲突（如果预提交表中存在该条目，且其类型为write， 同时，本次预提交类型也为write， 即预提交冲突）
+	pub fn try_prepare (&self, key: &Bin, log_type: &RwLog) -> Result<(), String> {
+		for o_rwlog in self.0.values() {
+			match o_rwlog.get(key) {
+				Some(RwLog::Read) => match log_type {
+					RwLog::Read => return Ok(()),
+					_ => return Err(String::from("parpare conflicted rw"))
+				},
+				None => return Ok(()),
+				Some(_e) => {
+					return Err(String::from("parpare conflicted rw2"))
+				},
+			}
+		}
+
+		Ok(())
+	}
+}
+
+impl Deref for Prepare {
+    type Target = FnvHashMap<Guid, FnvHashMap<Bin, RwLog>>;
+
+    fn deref(&self) -> &FnvHashMap<Guid, FnvHashMap<Bin, RwLog>> {
+        &self.0
+    }
+}
+
+impl DerefMut for Prepare {
+    fn deref_mut(&mut self) -> &mut FnvHashMap<Guid, FnvHashMap<Bin, RwLog>> {
+        &mut self.0
+    }
+}
+
+#[derive(Default, Clone, Hash)]
+pub struct Bon(Arc<Vec<u8>>);
+
+impl Bon{
+	pub fn new(inner: Arc<Vec<u8>>) -> Bon{
+		Bon(inner)
+	}
+}
+
+impl Deref for Bon{
+	type Target = Vec<u8>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl PartialOrd for Bon {
+	fn partial_cmp(&self, other: &Bon) -> Option<Ordering> {
+		ReadBuffer::new(self.0.as_slice(), 0).partial_cmp(&ReadBuffer::new(other.0.as_slice(), 0))
+	}
+}
+
+impl PartialEq for Bon{
+	 fn eq(&self, other: &Bon) -> bool {
+        match self.partial_cmp(other){
+			Some(Ordering::Equal) => return true,
+			_ => return false
+		};
+    }
+}
+
+impl Eq for Bon{}
+
+impl Ord for Bon{
+	fn cmp(&self, other: &Bon) -> Ordering {
+        self.partial_cmp(other).unwrap()
+    }
 }

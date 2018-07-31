@@ -11,7 +11,7 @@ use pi_lib::atom::{Atom};
 use pi_lib::guid::Guid;
 use pi_lib::sinfo::StructInfo;
 
-use db::{Bin, TabKV, SResult, DBResult, IterResult, KeyIterResult, NextResult, TxCallback, TxQueryCallback, Txn, TabTxn, MetaTxn, Tab, OpenTab, Ware, WareSnapshot, Filter, TxState, Iter};
+use db::{Bin, TabKV, SResult, DBResult, IterResult, KeyIterResult, NextResult, TxCallback, TxQueryCallback, Txn, TabTxn, MetaTxn, Tab, OpenTab, Ware, WareSnapshot, Filter, TxState, Iter, CommitResult, RwLog, Prepare, Bon};
 use tabs::{TabLog, Tabs};
 
 
@@ -20,7 +20,7 @@ pub struct MTab(Arc<Mutex<MemeryTab>>);
 impl Tab for MTab {
 	fn new(tab: &Atom) -> Self {
 		let tab = MemeryTab {
-			prepare: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
+			prepare: Prepare::new(FnvHashMap::with_capacity_and_hasher(0, Default::default())),
 			root: OrdMap::new(None),
 			tab: tab.clone(),
 		};
@@ -30,6 +30,10 @@ impl Tab for MTab {
 		let txn = MemeryTxn::new(self.clone(), id, writable);
 		return Arc::new(txn)
 	}
+
+	// fn get_prepare() -> (Atom, Bin, Option<Bin>){
+
+	// }
 }
 
 // 内存库
@@ -49,9 +53,9 @@ impl OpenTab for DB {
 }
 impl Ware for DB {
 	// 拷贝全部的表
-	// fn tabs_clone(&self) -> Self {
-	// 	self.clone()
-	// }
+	fn tabs_clone(&self) -> Arc<Ware> {
+		Arc::new(DB(Arc::new(RwLock::new(self.0.read().unwrap().clone_map()))))
+	}
 	// 列出全部的表
 	fn list(&self) -> Box<Iterator<Item=Atom>> {
 		Box::new(self.0.read().unwrap().list())
@@ -145,7 +149,7 @@ impl MemeryTxn {
 	}
 	//获取数据
 	pub fn get(&mut self, key: Bin) -> Option<Bin> {
-		match self.root.get(&key) {
+		match self.root.get(&Bon::new(key.clone())) {
 			Some(v) => {
 				if self.writable {
 					match self.rwlog.get(&key) {
@@ -163,14 +167,14 @@ impl MemeryTxn {
 	}
 	//插入/修改数据
 	pub fn upsert(&mut self, key: Bin, value: Bin) -> SResult<()> {
-		self.root.upsert(key.clone(), value.clone(), false);
+		self.root.upsert(Bon::new(key.clone()), value.clone(), false);
 		self.rwlog.insert(key.clone(), RwLog::Write(Some(value.clone())));
 		Ok(())
 	}
 	//删除
 	pub fn delete(&mut self, key: Bin) -> SResult<()> {
-		self.root.delete(&key, false);
-		self.rwlog.insert(key.clone(), RwLog::Write(None));
+		self.root.delete(&Bon::new(key.clone()), false);
+		self.rwlog.insert(key, RwLog::Write(None));
 		Ok(())
 	}
 
@@ -180,20 +184,10 @@ impl MemeryTxn {
 		//遍历事务中的读写日志
 		for (key, rw_v) in self.rwlog.iter() {
 			//检查预提交是否冲突
-			for o_rwlog in tab.prepare.values() {
-				match o_rwlog.get(key) {
-					Some(RwLog::Read) => match rw_v {
-						RwLog::Read => (),
-						_ => return Err(String::from("parpare conflicted rw"))
-					},
-					None => (),
-					Some(_e) => {
-						return Err(String::from("parpare conflicted rw2"))
-					},
-				}
-			}
+			tab.prepare.try_prepare(key, rw_v).expect("");
 			//检查Tab根节点是否改变
 			if tab.root.ptr_eq(&self.old) == false {
+				let key = Bon::new(key.clone());
 				match tab.root.get(&key) {
 					Some(r1) => match self.old.get(&key) {
 						Some(r2) if (r1 as *const Bin) == (r2 as *const Bin) => (),
@@ -212,9 +206,9 @@ impl MemeryTxn {
 		return Ok(())
 	}
 	//提交
-	pub fn commit1(&mut self) -> SResult<()> {
+	pub fn commit1(&mut self) -> SResult<FnvHashMap<Bin, RwLog>> {
 		let mut tab = self.tab.0.lock().unwrap();
-		match tab.prepare.remove(&self.id) {
+		let log = match tab.prepare.remove(&self.id) {
 			Some(rwlog) => {
 				let root_if_eq = tab.root.ptr_eq(&self.old);
 				//判断根节点是否相等
@@ -223,6 +217,7 @@ impl MemeryTxn {
 						match rw_v {
 							RwLog::Read => (),
 							_ => {
+								let k = Bon::new(k.clone());
 								match rw_v {
 									RwLog::Write(None) => {
 										tab.root.delete(&k, false);
@@ -241,10 +236,11 @@ impl MemeryTxn {
 				} else {
 					tab.root = self.root.clone();
 				}
+				rwlog
 			},
 			None => return Err(String::from("error prepare null"))
-		}
-		Ok(())
+		};
+		Ok(log)
 	}
 	//回滚
 	pub fn rollback1(&mut self) -> SResult<()> {
@@ -274,13 +270,13 @@ impl Txn for RefMemeryTxn {
 		}
 	}
 	// 提交一个事务
-	fn commit(&self, _cb: TxCallback) -> DBResult {
+	fn commit(&self, _cb: TxCallback) -> CommitResult {
 		let mut txn = self.borrow_mut();
 		txn.state = TxState::Committing;
 		match txn.commit1() {
-			Ok(()) => {
+			Ok(log) => {
 				txn.state = TxState::Commited;
-				return Some(Ok(()))
+				return Some(Ok(log))
 			},
 			Err(e) => return Some(Err(e.to_string())),
 		}
@@ -364,10 +360,16 @@ impl TabTxn for RefMemeryTxn {
 		_cb: Arc<Fn(IterResult)>,
 	) -> Option<IterResult> {
 		let b = self.borrow_mut();
-		Some(Ok(Box::new(MemIter::new(b.root.clone(), b.root.iter(match &key {
+		let key = match key {
+			Some(k) => Some(Bon::new(k)),
+			None => None,
+		};
+		let key = match &key {
 			&Some(ref k) => Some(k),
 			None => None,
-		} , descending), filter))))
+		};
+
+		Some(Ok(Box::new(MemIter::new(b.root.clone(), b.root.iter( key, descending), filter))))
 	}
 	// 迭代
 	fn key_iter(
@@ -378,10 +380,15 @@ impl TabTxn for RefMemeryTxn {
 		_cb: Arc<Fn(KeyIterResult)>,
 	) -> Option<KeyIterResult> {
 		let b = self.borrow_mut();
-		Some(Ok(Box::new(MemKeyIter::new(b.root.clone(), b.root.keys(match &key {
+		let key = match key {
+			Some(k) => Some(Bon::new(k)),
+			None => None,
+		};
+		let key = match &key {
 			&Some(ref k) => Some(k),
 			None => None,
-		}, descending), filter))))
+		};
+		Some(Ok(Box::new(MemKeyIter::new(b.root.clone(), b.root.keys(key, descending), filter))))
 	}
 	// 索引迭代
 	fn index(
@@ -408,16 +415,12 @@ impl TabTxn for RefMemeryTxn {
 //================================ 内部结构和方法
 const TIMEOUT: usize = 100;
 
-#[derive(Clone, Debug)]
-enum RwLog {
-	Read,
-	Write(Option<Bin>),
-}
-type BinMap = OrdMap<Tree<Bin, Bin>>;
+
+type BinMap = OrdMap<Tree<Bon, Bin>>;
 
 // 内存表
 struct MemeryTab {
-	pub prepare: FnvHashMap<Guid, FnvHashMap<Bin, RwLog>>,
+	pub prepare: Prepare,
 	pub root: BinMap,
 	pub tab: Atom,
 }
@@ -428,8 +431,14 @@ pub struct MemIter{
 	point: usize,
 }
 
+impl Drop for MemIter{
+	fn drop(&mut self) {
+        unsafe{Box::from_raw(self.point as *mut <Tree<Bin, Bin> as OIter<'_>>::IterType)};
+    }
+}
+
 impl MemIter{
-	pub fn new<'a>(root: BinMap, it: <Tree<Bin, Bin> as OIter<'a>>::IterType, filter: Filter) -> MemIter{
+	pub fn new<'a>(root: BinMap, it: <Tree<Bon, Bin> as OIter<'a>>::IterType, filter: Filter) -> MemIter{
 		MemIter{
 			_root: root,
 			_filter: filter,
@@ -441,10 +450,13 @@ impl MemIter{
 impl Iter for MemIter{
 	type Item = (Bin, Bin);
 	fn next(&mut self, _cb: Arc<Fn(NextResult<Self::Item>)>) -> Option<NextResult<Self::Item>>{
-		Some(Ok(match unsafe{Box::from_raw(self.point as *mut <Tree<Bin, Bin> as OIter<'_>>::IterType)}.next() {
+		let mut it = unsafe{Box::from_raw(self.point as *mut <Tree<Bin, Bin> as OIter<'_>>::IterType)};
+		let r = Some(Ok(match it.next() {
 			Some(&Entry(ref k, ref v)) => Some((k.clone(), v.clone())),
 			None => None,
-		}))
+		}));
+		mem::forget(it);
+		r
 	}
 }
 
@@ -454,8 +466,14 @@ pub struct MemKeyIter{
 	point: usize
 }
 
+impl Drop for MemKeyIter{
+	fn drop(&mut self) {
+        unsafe{Box::from_raw(self.point as *mut Keys<'_, Tree<Bin, Bin>>)};
+    }
+}
+
 impl MemKeyIter{
-	pub fn new(root: BinMap, keys: Keys<'_, Tree<Bin, Bin>>, filter: Filter) -> MemKeyIter{
+	pub fn new(root: BinMap, keys: Keys<'_, Tree<Bon, Bin>>, filter: Filter) -> MemKeyIter{
 		MemKeyIter{
 			_root: root,
 			_filter: filter,
@@ -467,10 +485,13 @@ impl MemKeyIter{
 impl Iter for MemKeyIter{
 	type Item = Bin;
 	fn next(&mut self, _cb: Arc<Fn(NextResult<Self::Item>)>) -> Option<NextResult<Self::Item>>{
-		Some(Ok(match unsafe{Box::from_raw(self.point as *mut Keys<'_, Tree<Bin, Bin>>)}.next() {
+		let it = unsafe{Box::from_raw(self.point as *mut Keys<'_, Tree<Bin, Bin>>)};
+		let r = Some(Ok(match unsafe{Box::from_raw(self.point as *mut Keys<'_, Tree<Bin, Bin>>)}.next() {
 			Some(k) => Some(k.clone()),
 			None => None,
-		}))
+		}));
+		mem::forget(it);
+		r
 	}
 }
 
@@ -501,8 +522,8 @@ impl Txn for MemeryMetaTxn {
 		Some(Ok(()))
 	}
 	// 提交一个事务
-	fn commit(&self, _cb: TxCallback) -> DBResult {
-		Some(Ok(()))
+	fn commit(&self, _cb: TxCallback) -> CommitResult {
+		Some(Ok(FnvHashMap::with_capacity_and_hasher(0, Default::default())))
 	}
 	// 回滚一个事务
 	fn rollback(&self, _cb: TxCallback) -> DBResult {
