@@ -7,13 +7,13 @@ use std::mem;
 
 use fnv::FnvHashMap;
 
-use pi_lib::ordmap::{OrdMap, Entry};
+use pi_lib::ordmap::{OrdMap, Entry, ImOrdMap};
 use pi_lib::asbtree::{Tree, new};
 use pi_lib::atom::Atom;
 use pi_lib::sinfo::StructInfo;
 use pi_lib::guid::{Guid, GuidGen};
 
-use db::{SResult, DBResult, IterResult, KeyIterResult, Filter, TabKV, TxCallback, TxQueryCallback, TxState, MetaTxn, TabTxn, Ware, WareSnapshot};
+use db::{SResult, DBResult, IterResult, KeyIterResult, Filter, TabKV, TxCallback, TxQueryCallback, TxState, MetaTxn, TabTxn, Ware, WareSnapshot, Bin, RwLog};
 
 // 表库及事务管理器
 #[derive(Clone)]
@@ -27,7 +27,7 @@ impl Mgr {
 	// 浅拷贝，库表不同，共用同一个统计信息和GuidGen
 	pub fn shallow_clone(&self) -> Self {
 		// TODO 拷库表
-		Mgr(Arc::new(Mutex::new(Manager::new())), Arc::new(Mutex::new(WareMap::new())), self.2.clone(), self.3.clone())
+		Mgr(Arc::new(Mutex::new(Manager::new())), Arc::new(Mutex::new(self.1.lock().unwrap().wares_clone())), self.2.clone(), self.3.clone())
 	}
 	// 深拷贝，库表及统计信息不同
 	pub fn deep_clone(&self, clone_guid_gen: bool) -> Self {
@@ -60,7 +60,11 @@ impl Mgr {
 		let map = {
 			self.1.lock().unwrap().clone()
 		};
-		self.0.lock().unwrap().transaction(map, writable, id)
+		self.0.lock().unwrap().transaction(map, writable, id, self.clone())
+	}
+
+	pub fn listen(&self, monitor: Arc<Monitor>){
+		self.0.lock().unwrap().register_monitor(monitor);
 	}
 	// 寻找指定的库
 	fn find(&self, ware_name: &Atom) -> Option<Arc<Ware>> {
@@ -70,6 +74,21 @@ impl Mgr {
 		map.find(ware_name)
 	}
 }
+
+pub struct Event {
+	pub ware: Atom,
+	pub tab: Atom,
+	pub other: EventType
+}
+pub enum EventType{
+	Meta(Option<StructInfo>),
+	Tab{key: Bin, value: Option<Bin>},
+}
+
+pub trait Monitor {
+	fn notify(&self, event: Event, mgr: Mgr);
+}
+
 
 // 事务统计
 #[derive(Clone)]
@@ -182,7 +201,7 @@ impl Tr {
 		&self,
 		ware: &Atom,
 		tab: &Atom,
-		key: Option<Arc<Vec<u8>>>,
+		key: Option<Bin>,
 		descending: bool,
 		filter: Filter,
 		cb: Arc<Fn(IterResult)>,
@@ -198,7 +217,7 @@ impl Tr {
 		&self,
 		ware: &Atom,
 		tab: &Atom,
-		key: Option<Arc<Vec<u8>>>,
+		key: Option<Bin>,
 		descending: bool,
 		filter: Filter,
 		cb: Arc<Fn(KeyIterResult)>,
@@ -291,16 +310,18 @@ struct Manager {
 	// 定时轮
 	// 管理用的弱引用事务
 	weak_map: FnvHashMap<Guid, Weak<Mutex<Tx>>>,
+	monitors: OrdMap<Tree<usize, Arc<Monitor>>>,//监听器列表
 }
 impl Manager {
 	// 注册管理器
 	fn new() -> Self {
 		Manager {
 			weak_map: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
+			monitors: OrdMap::new(Tree::new())
 		}
 	}
 	// 创建事务
-	fn transaction(&mut self, ware_map: WareMap, writable: bool, id: Guid) -> Tr {
+	fn transaction(&mut self, ware_map: WareMap, writable: bool, id: Guid, mgr: Mgr) -> Tr {
 		// 遍历ware_map, 将每个Ware的快照TabLog记录下来
 		let mut map = FnvHashMap::with_capacity_and_hasher(ware_map.0.size() * 3 / 2, Default::default());
 		for Entry(k, v) in ware_map.0.iter(None, false){
@@ -315,11 +336,16 @@ impl Manager {
 			_timer_ref: 0,
 			tab_txns: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
 			meta_txns: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
+			monitors: self.monitors.clone(),
+			mgr:mgr,
 		})));
 		self.weak_map.insert(id, Arc::downgrade(&(tr.0)));
 		tr
 	}
 
+	fn register_monitor(&mut self, monitor: Arc<Monitor>){
+		self.monitors.insert(self.monitors.size(), monitor);
+	}
 }
 
 // 库表
@@ -329,6 +355,14 @@ struct WareMap(OrdMap<Tree<Atom, Arc<Ware>>>);
 impl WareMap {
 	fn new() -> Self {
 		WareMap(OrdMap::new(new()))
+	}
+
+	fn wares_clone(&self) -> Self{
+		let mut wares = Vec::new();
+		for ware in self.0.iter(None, false){
+			wares.push(Entry(ware.0.clone(), ware.1.tabs_clone()));
+		}
+		WareMap(OrdMap::new(Tree::from_order(wares)))
 	}
 	// 注册库
 	fn register(&mut self, ware_name: Atom, ware: Arc<Ware>) -> bool {
@@ -362,6 +396,8 @@ struct Tx {
 	_timer_ref: usize,
 	tab_txns: FnvHashMap<Atom, Arc<TabTxn>>, //表事务表
 	meta_txns: FnvHashMap<Atom, Arc<MetaTxn>>, //元信息事务表
+	monitors: OrdMap<Tree<usize, Arc<Monitor>>>, //监听器列表
+	mgr: Mgr,
 }
 
 impl Tx {
@@ -459,11 +495,22 @@ impl Tx {
 		});
 
 		//处理每个表的提交
-		for val in self.tab_txns.values_mut() {
+		for (tab_name, val) in self.tab_txns.iter_mut() {
 			match val.commit(bf.clone()) {
 				Some(r) => {
 					match r {
-						Ok(_) => (),
+						Ok(logs) => {
+							for (k, v) in logs.into_iter(){ //将表的提交日志添加到事件列表中
+								match v {
+									RwLog::Write(value) => {
+										for Entry(_, monitor) in self.monitors.iter(None, false){
+											monitor.notify(Event{ware: Atom::from(""), tab: tab_name.clone(), other: EventType::Tab{key:k.clone(), value: value.clone()}}, self.mgr.clone())
+										}
+									},
+									_ => (),
+								}
+							}
+						}
 						_ => self.state = TxState::CommitFail
 					};
 					if count.fetch_sub(1, Ordering::SeqCst) == 1 {
@@ -700,7 +747,7 @@ impl Tx {
 		None
 	}
 	// 迭代
-	fn iter(&mut self, tr: &Tr, ware: &Atom, tab: &Atom, key: Option<Arc<Vec<u8>>>, descending: bool, filter: Filter, cb: Arc<Fn(IterResult)>) -> Option<IterResult> {
+	fn iter(&mut self, tr: &Tr, ware: &Atom, tab: &Atom, key: Option<Bin>, descending: bool, filter: Filter, cb: Arc<Fn(IterResult)>) -> Option<IterResult> {
 		let tr1 = tr.clone();
 		let tr2 = tr.clone();
 		let key1 = key.clone();
@@ -733,7 +780,7 @@ impl Tx {
 		}
 	}
 	// 迭代
-	fn key_iter(&mut self, tr: &Tr, ware: &Atom, tab: &Atom, key: Option<Arc<Vec<u8>>>, descending: bool, filter: Filter, cb: Arc<Fn(KeyIterResult)>) -> Option<KeyIterResult> {
+	fn key_iter(&mut self, tr: &Tr, ware: &Atom, tab: &Atom, key: Option<Bin>, descending: bool, filter: Filter, cb: Arc<Fn(KeyIterResult)>) -> Option<KeyIterResult> {
 		let tr1 = tr.clone();
 		let tr2 = tr.clone();
 		let key1 = key.clone();
@@ -1033,7 +1080,8 @@ impl Decode for Player{
 fn test_memery_db_mgr(){
 
 	let mgr = Mgr::new(GuidGen::new(1,1));
-	mgr.register(Atom::from("memery"), Arc::new(memery_db::DB::new()));
+	let db = memery_db::DB::new();
+	mgr.register(Atom::from("memery"), Arc::new(db));
 	let mgr = Arc::new(mgr);
 
 	let tr = mgr.transaction(true);
@@ -1061,10 +1109,12 @@ fn test_memery_db_mgr(){
 				let tr = mgr2.transaction(false);
 				let tr1 = tr.clone();
 				let mut arr = Vec::new();
+				let mut key = WriteBuffer::new();
+				key.write_u8(5);
 				let t1 = TabKV{
 					ware: Atom::from("memery"),
 					tab: Atom::from("Player"),
-					key: Arc::new(vec![5u8]),
+					key: Arc::new(key.unwrap()),
 					index: 0,
 					value: None,
 				};
@@ -1078,9 +1128,10 @@ fn test_memery_db_mgr(){
 							for elem in v.iter_mut(){
 								match elem.value {
 									Some(ref mut v) => {
+										println!("kkkkkkkkkkkkk{:?}", v.len());
 										let mut buf = ReadBuffer::new(Arc::make_mut(v),0);
-										let p = Player::decode(&mut buf);
-										println!("{:?}", p);
+										//let p = Player::decode(&mut buf);
+										//println!("{:?}", p);
 									},
 									None => (),
 								}
@@ -1114,14 +1165,18 @@ fn test_memery_db_mgr(){
 			};
 			let mut bonbuf = WriteBuffer::new();
 			p.encode(&mut bonbuf);
+			let v = bonbuf.unwrap();
+			println!("vvvvvvvvvvvvvvvvvvvvvvvvvvvvv{}", v.len());
 
 			let mut arr = Vec::new();
+			let mut key = WriteBuffer::new();
+			key.write_u8(5);
 			let t1 = TabKV{
 				ware: Atom::from("memery"),
 				tab: Atom::from("Player"),
-				key: Arc::new(vec![5u8]),
+				key: Arc::new(key.unwrap()),
 				index: 0,
-				value: Some(Arc::new(bonbuf.unwrap())),
+				value: Some(Arc::new(v)),
 			};
 			arr.push(t1);
 
@@ -1150,123 +1205,3 @@ fn test_memery_db_mgr(){
 		alter_back(r.unwrap());
 	}
 }
-
-// #[test]
-// fn test_file_db_mgr(){
-
-// 	let mgr = Mgr::new(GuidGen::new(1,1));
-// 	mgr.register(&Atom::from("file"), Arc::new(memery_db::MemeryDB::new(Atom::from("file"))));
-// 	let mgr = Arc::new(mgr);
-
-// 	let tr = mgr.transaction(true, 1000);
-// 	let tr1 = tr.clone();
-// 	let mut sinfo = StructInfo::new(Atom::from("Player"), 55555555);
-// 	let mut m = HashMap::new();
-// 	m.insert(Atom::from("class"), Atom::from("memery"));
-// 	sinfo.notes = Some(m);
-// 	let alter_back = Arc::new(move|r: SResult<()>|{
-// 		println!("alter: {:?}", r);
-		
-// 		match tr1.prepare(Arc::new(|r|{println!("prepare_alter:{:?}", r)})){
-// 			Some(r) => println!("prepare_alter:{:?}", r),
-// 			_ => println!("prepare_alter:fail"),
-// 		};
-// 		match tr1.commit(Arc::new(|r|{println!("commit_alter:{:?}", r)})){
-// 			Some(r) => println!("commit_alter:{:?}", r),
-// 			_ => println!("commit_alter:fail"),
-// 		};
-// 		println!("alter_succsess");
-// 		let mgr1 = mgr.clone();
-// 		let write = move||{
-// 			let mgr2 = mgr1.clone();
-// 			let read = move||{
-// 				let tr = mgr2.transaction(false, 1000);
-// 				let tr1 = tr.clone();
-// 				let mut arr = Vec::new();
-// 				let t1 = TabKV{
-// 					tab: Atom::from("Player"),
-// 					key: vec![5u8],
-// 					index: 0,
-// 					value: None,
-// 				};
-// 				arr.push(t1);
-
-// 				let read_back = Arc::new(move|r: SResult<Vec<TabKV>>|{
-// 					match r {
-// 						Ok(mut v) => {
-// 							println!("read:ok");
-// 							for elem in v.iter_mut(){
-// 								match elem.value {
-// 									Some(ref mut v) => {
-// 										let mut buf = BonBuffer::with_bytes(Arc::make_mut(v).clone(), None, None);
-// 										let p = Player::decode(&mut buf);
-// 										println!("{:?}", p);
-// 									},
-// 									None => (),
-// 								}
-// 							}
-// 						},
-// 						Err(v) => println!("read:fail, {}", v),
-// 					}
-// 					//println!("read: {:?}", r);
-// 					match tr1.prepare(Arc::new(|r|{println!("prepare_read:{:?}", r)})){
-// 						Some(r) => println!("prepare_read:{:?}", r),
-// 						_ => println!("prepare_read:fail"),
-// 					};
-// 					match tr1.commit(Arc::new(|r|{println!("commit_read:{:?}", r)})){
-// 						Some(r) => println!("commit_read:{:?}", r),
-// 						_ => println!("commit_read:fail"),
-// 					};
-// 					//println!("succsess:{}", arr.len());
-// 				});
-
-// 				let r = tr.query(arr, Some(100), true, read_back.clone());
-// 				if r.is_some(){
-// 					read_back(r.unwrap());
-// 				}
-// 			};
-
-// 			let tr = mgr1.transaction(true, 1000);
-// 			let tr1 = tr.clone();
-// 			let p = Player{
-// 				name: String::from("chuanyan"),
-// 				id:5
-// 			};
-// 			let mut bonbuf = BonBuffer::new();
-// 			let bon = p.encode(&mut bonbuf);
-// 			let buf = bonbuf.unwrap();
-
-// 			let mut arr = Vec::new();
-// 			let t1 = TabKV{
-// 				tab: Atom::from("Player"),
-// 				key: vec![5u8],
-// 				index: 0,
-// 				value: Some(Arc::new(buf)),
-// 			};
-// 			arr.push(t1);
-
-// 			let write_back = Arc::new(move|r|{
-// 				println!("write: {:?}", r);
-// 				match tr1.prepare(Arc::new(|r|{println!("prepare_write:{:?}", r)})){
-// 					Some(r) => println!("prepare_write:{:?}", r),
-// 					_ => println!("prepare_write:fail"),
-// 				};
-// 				match tr1.commit(Arc::new(|r|{println!("commit_write:{:?}", r)})){
-// 					Some(r) => println!("commit_write:{:?}", r),
-// 					_ => println!("commit_write:fail"),
-// 				};
-// 				&read();
-// 			});
-// 			let r = tr.modify(arr, Some(100), false, write_back.clone());
-// 			if r.is_some(){
-// 				write_back(r.unwrap());
-// 			}
-// 		};
-// 		write();
-// 	});
-// 	let r = tr.alter(&Atom::from("Player"), Some(Arc::new(sinfo)), alter_back.clone());
-// 	if r.is_some(){
-// 		alter_back(r.unwrap());
-// 	}
-// }
-

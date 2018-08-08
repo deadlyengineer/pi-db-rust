@@ -125,7 +125,7 @@ impl<T: Clone + Tab> TabLog<T> {
 					Err(s) => Some(Err(s))
 				}
 			},
-			_ => Some(Err(String::from("TabNotFound")))
+			_ => {Some(Err(String::from("TabNotFound: ") + (*tab_name).as_str()))}
 		}
 	}
 }
@@ -133,6 +133,12 @@ impl<T: Clone + Tab> TabLog<T> {
 pub struct TabIter<T: Clone + Tab>{
 	_root: OrdMap<Tree<Atom, TabInfo<T>>>,
 	point: usize,
+}
+
+impl<T: Clone + Tab> Drop for TabIter<T>{
+	fn drop(&mut self) {
+        unsafe{Box::from_raw(self.point as *mut Keys<'static, Tree<Atom, TabInfo<T>>>)};
+    }
 }
 
 impl<'a, T: 'a + Clone + Tab> TabIter<T>{
@@ -147,10 +153,13 @@ impl<'a, T: 'a + Clone + Tab> TabIter<T>{
 impl<T: Clone + Tab> Iterator for TabIter<T>{
 	type Item = Atom;
 	fn next(&mut self) -> Option<Self::Item>{
-		match unsafe{Box::from_raw(self.point as *mut Keys<'static, Tree<Atom, TabInfo<T>>>)}.next() {
+		let mut it = unsafe{Box::from_raw(self.point as *mut Keys<'static, Tree<Atom, TabInfo<T>>>)};
+		let r = match it.next() {
 			Some(k) => Some(k.clone()),
 			None => None,
-		}
+		};
+		mem::forget(it);
+		r
 	}
 }
 
@@ -170,6 +179,14 @@ impl<T: Clone + Tab> Tabs<T> {
 			prepare: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
 		}
 	}
+
+	pub fn clone_map(&self) -> Self{
+		Tabs {
+			map : self.map.clone(),
+			prepare: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
+		}
+	}
+
 	// 列出全部的表
 	pub fn list(&self) -> TabIter<T> {
 		TabIter::new(self.map.clone(), self.map.keys(None, false))
@@ -203,7 +220,7 @@ impl<T: Clone + Tab> Tabs<T> {
 		self.map.insert(tab, TabInfo::new(meta))
 	}
 
-	// 元信息的预提交
+	// 预提交
 	pub fn prepare(&mut self, id: &Guid, log: &mut TabLog<T>) -> SResult<()> {
 		// 先检查预提交的交易是否有冲突
 		for val in self.prepare.values() {
@@ -272,6 +289,7 @@ struct TabInit<T: Clone + Tab> {
 	tab: SResult<T>,
 	wait: Option<Vec<Box<Fn(SResult<T>)>>>, // 为None表示tab已经加载
 }
+
 //================================ 内部静态方法
 // 表构建函数的回调函数
 fn handle_fn<T: Tab>(id: Guid, writable: bool, cb: Box<Fn(SResult<Arc<TabTxn>>)>) -> Box<Fn(SResult<T>)> {
