@@ -184,7 +184,10 @@ impl MemeryTxn {
 		//遍历事务中的读写日志
 		for (key, rw_v) in self.rwlog.iter() {
 			//检查预提交是否冲突
-			tab.prepare.try_prepare(key, rw_v).expect("");
+			match tab.prepare.try_prepare(key, rw_v) {
+				Ok(_) => (),
+				Err(s) => return Err(s),
+			};
 			//检查Tab根节点是否改变
 			if tab.root.ptr_eq(&self.old) == false {
 				let key = Bon::new(key.clone());

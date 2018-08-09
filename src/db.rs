@@ -148,7 +148,7 @@ pub trait WareSnapshot {
 	fn rollback(&self, id: &Guid);
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum TxState {
 	Ok = 1,
 	Doing,
@@ -162,6 +162,25 @@ pub enum TxState {
 	Rollbacking,
 	Rollbacked,
 	RollbackFail,
+}
+
+impl ToString for TxState{
+	fn to_string(&self) -> String{
+		match self {
+			TxState::Ok => String::from("TxState::Ok"),
+			TxState::Doing => String::from("TxState::Doing"),
+			TxState::Err => String::from("TxState::Err"),
+			TxState::Preparing => String::from("TxState::Preparing"),
+			TxState::PreparOk => String::from("TxState::PreparOk"),
+			TxState::PreparFail => String::from("TxState::PreparFail"),
+			TxState::Committing => String::from("TxState::Committing"),
+			TxState::Commited => String::from("TxState::Commited"),
+			TxState::CommitFail => String::from("TxState::CommitFail"),
+			TxState::Rollbacking => String::from("TxState::Rollbacking"),
+			TxState::Rollbacked => String::from("TxState::Rollbacked"),
+			TxState::RollbackFail => String::from("TxState::RollbackFail"),
+		}
+	}
 }
 
 /**
