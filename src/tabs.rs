@@ -3,6 +3,7 @@
  */
 use std::sync::{Arc, Mutex};
 use std::mem;
+use std::ops::{DerefMut, Deref};
 
 use fnv::{FnvHashMap, FnvHashSet};
 
@@ -12,7 +13,7 @@ use pi_lib::atom::Atom;
 use pi_lib::sinfo::StructInfo;
 use pi_lib::guid::Guid;
 
-use db::{SResult, Tab, TabTxn, OpenTab};
+use db::{SResult, Tab, TabTxn, OpenTab, Bin, RwLog};
 
 // 表结构及修改日志
 pub struct TabLog<T: Clone + Tab> {
@@ -128,6 +129,46 @@ impl<T: Clone + Tab> TabLog<T> {
 			_ => {Some(Err(String::from("TabNotFound: ") + (*tab_name).as_str()))}
 		}
 	}
+}
+
+pub struct Prepare(FnvHashMap<Guid, FnvHashMap<Bin, RwLog>>);
+
+impl Prepare{
+	pub fn new(map: FnvHashMap<Guid, FnvHashMap<Bin, RwLog>>) -> Prepare{
+		Prepare(map)
+	}
+
+    //检查预提交是否冲突（如果预提交表中存在该条目，且其类型为write， 同时，本次预提交类型也为write， 即预提交冲突）
+	pub fn try_prepare (&self, key: &Bin, log_type: &RwLog) -> Result<(), String> {
+		for o_rwlog in self.0.values() {
+			match o_rwlog.get(key) {
+				Some(RwLog::Read) => match log_type {
+					RwLog::Read => return Ok(()),
+					_ => return Err(String::from("parpare conflicted rw"))
+				},
+				None => return Ok(()),
+				Some(_e) => {
+					return Err(String::from("parpare conflicted rw2"))
+				},
+			}
+		}
+
+		Ok(())
+	}
+}
+
+impl Deref for Prepare {
+    type Target = FnvHashMap<Guid, FnvHashMap<Bin, RwLog>>;
+
+    fn deref(&self) -> &FnvHashMap<Guid, FnvHashMap<Bin, RwLog>> {
+        &self.0
+    }
+}
+
+impl DerefMut for Prepare {
+    fn deref_mut(&mut self) -> &mut FnvHashMap<Guid, FnvHashMap<Bin, RwLog>> {
+        &mut self.0
+    }
 }
 
 pub struct TabIter<T: Clone + Tab>{

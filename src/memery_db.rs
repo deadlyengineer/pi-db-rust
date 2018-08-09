@@ -11,8 +11,8 @@ use pi_lib::atom::{Atom};
 use pi_lib::guid::Guid;
 use pi_lib::sinfo::StructInfo;
 
-use db::{Bin, TabKV, SResult, DBResult, IterResult, KeyIterResult, NextResult, TxCallback, TxQueryCallback, Txn, TabTxn, MetaTxn, Tab, OpenTab, Ware, WareSnapshot, Filter, TxState, Iter, CommitResult, RwLog, Prepare, Bon};
-use tabs::{TabLog, Tabs};
+use db::{Bin, TabKV, SResult, DBResult, IterResult, KeyIterResult, NextResult, TxCallback, TxQueryCallback, Txn, TabTxn, MetaTxn, Tab, OpenTab, Ware, WareSnapshot, Filter, TxState, Iter, CommitResult, RwLog, Bon};
+use tabs::{TabLog, Tabs, Prepare};
 
 
 #[derive(Clone)]
@@ -30,10 +30,6 @@ impl Tab for MTab {
 		let txn = MemeryTxn::new(self.clone(), id, writable);
 		return Arc::new(txn)
 	}
-
-	// fn get_prepare() -> (Atom, Bin, Option<Bin>){
-
-	// }
 }
 
 // 内存库
@@ -533,4 +529,3 @@ impl Txn for MemeryMetaTxn {
 		Some(Ok(()))
 	}
 }
-//================================ 内部静态方法
