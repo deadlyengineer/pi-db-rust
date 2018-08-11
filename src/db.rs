@@ -5,7 +5,7 @@
 use std::result::Result;
 use std::sync::Arc;
 use std::vec::Vec;
-use std::ops::{DerefMut, Deref};
+use std::ops::{Deref};
 use std::cmp::{Ord, Eq, PartialOrd, PartialEq, Ordering};
 
 use fnv::FnvHashMap;
@@ -148,7 +148,7 @@ pub trait WareSnapshot {
 	fn rollback(&self, id: &Guid);
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum TxState {
 	Ok = 1,
 	Doing,
@@ -162,6 +162,25 @@ pub enum TxState {
 	Rollbacking,
 	Rollbacked,
 	RollbackFail,
+}
+
+impl ToString for TxState{
+	fn to_string(&self) -> String{
+		match self {
+			TxState::Ok => String::from("TxState::Ok"),
+			TxState::Doing => String::from("TxState::Doing"),
+			TxState::Err => String::from("TxState::Err"),
+			TxState::Preparing => String::from("TxState::Preparing"),
+			TxState::PreparOk => String::from("TxState::PreparOk"),
+			TxState::PreparFail => String::from("TxState::PreparFail"),
+			TxState::Committing => String::from("TxState::Committing"),
+			TxState::Commited => String::from("TxState::Commited"),
+			TxState::CommitFail => String::from("TxState::CommitFail"),
+			TxState::Rollbacking => String::from("TxState::Rollbacking"),
+			TxState::Rollbacked => String::from("TxState::Rollbacked"),
+			TxState::RollbackFail => String::from("TxState::RollbackFail"),
+		}
+	}
 }
 
 /**
@@ -200,46 +219,7 @@ pub enum RwLog {
 	Meta(Option<Bin>),
 }
 
-pub struct Prepare(FnvHashMap<Guid, FnvHashMap<Bin, RwLog>>);
-
-impl Prepare{
-	pub fn new(map: FnvHashMap<Guid, FnvHashMap<Bin, RwLog>>) -> Prepare{
-		Prepare(map)
-	}
-
-    //检查预提交是否冲突（如果预提交表中存在该条目，且其类型为write， 同时，本次预提交类型也为write， 即预提交冲突）
-	pub fn try_prepare (&self, key: &Bin, log_type: &RwLog) -> Result<(), String> {
-		for o_rwlog in self.0.values() {
-			match o_rwlog.get(key) {
-				Some(RwLog::Read) => match log_type {
-					RwLog::Read => return Ok(()),
-					_ => return Err(String::from("parpare conflicted rw"))
-				},
-				None => return Ok(()),
-				Some(_e) => {
-					return Err(String::from("parpare conflicted rw2"))
-				},
-			}
-		}
-
-		Ok(())
-	}
-}
-
-impl Deref for Prepare {
-    type Target = FnvHashMap<Guid, FnvHashMap<Bin, RwLog>>;
-
-    fn deref(&self) -> &FnvHashMap<Guid, FnvHashMap<Bin, RwLog>> {
-        &self.0
-    }
-}
-
-impl DerefMut for Prepare {
-    fn deref_mut(&mut self) -> &mut FnvHashMap<Guid, FnvHashMap<Bin, RwLog>> {
-        &mut self.0
-    }
-}
-
+//为了按照Bon协议比较字节数组， 定义了类型Bon
 #[derive(Default, Clone, Hash)]
 pub struct Bon(Arc<Vec<u8>>);
 

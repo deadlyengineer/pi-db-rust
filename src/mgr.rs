@@ -131,7 +131,7 @@ impl Tr {
 		let mut t = self.0.lock().unwrap();
 		match t.state {
 			TxState::Ok => t.prepare(self, cb),
-			_ => Some(Err(String::from("InvalidState"))),
+			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
 		}
 	}
 	// 提交一个事务
@@ -139,7 +139,7 @@ impl Tr {
 		let mut t = self.0.lock().unwrap();
 		match t.state {
 			TxState::PreparOk => t.commit(self, cb),
-			_ => Some(Err(String::from("InvalidState"))),
+			_ => Some(Err(String::from("InvalidState, expect:TxState::PreparOk, found:") + t.state.to_string().as_str())),
 		}
 	}
 	// 回滚一个事务
@@ -147,7 +147,7 @@ impl Tr {
 		let mut t = self.0.lock().unwrap();
 		match t.state {
 			TxState::Committing|TxState::Commited|TxState::CommitFail|TxState::Rollbacking|TxState::Rollbacked|TxState::RollbackFail =>
-				return Some(Err(String::from("InvalidState"))),
+				return Some(Err(String::from("InvalidState, expect:TxState::Committing | TxState::Commited| TxState::CommitFail| TxState::Rollbacking| TxState::Rollbacked| TxState::RollbackFail, found:") + t.state.to_string().as_str())),
 			_ => t.rollback(self, cb)
 		}
 	}
@@ -156,7 +156,7 @@ impl Tr {
 		let mut t = self.0.lock().unwrap();
 		match t.state {
 			TxState::Ok => t.key_lock(self, arr, lock_time, read_lock, cb),
-			_ => Some(Err(String::from("InvalidState"))),
+			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
 		}
 	}
 	// 查询
@@ -170,7 +170,7 @@ impl Tr {
 		let mut t = self.0.lock().unwrap();
 		match t.state {
 			TxState::Ok => t.query(self, arr, lock_time, read_lock, cb),
-			_ => Some(Err(String::from("InvalidState"))),
+			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
 		}
 	}
 	// 修改，插入、删除及更新
@@ -181,7 +181,7 @@ impl Tr {
 		}
 		match t.state {
 			TxState::Ok => t.modify(self, arr, lock_time, read_lock, cb),
-			_ => Some(Err(String::from("InvalidState"))),
+			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
 		}
 	}
 	// 范围查询
@@ -209,7 +209,7 @@ impl Tr {
 		let mut t = self.0.lock().unwrap();
 		match t.state {
 			TxState::Ok => t.iter(self, ware, tab, key, descending, filter, cb),
-			_ => Some(Err(String::from("InvalidState"))),
+			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
 		}
 	}
 	// 键迭代
@@ -225,7 +225,7 @@ impl Tr {
 		let mut t = self.0.lock().unwrap();
 		match t.state {
 			TxState::Ok => t.key_iter(self, ware, tab, key, descending, filter, cb),
-			_ => Some(Err(String::from("InvalidState"))),
+			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
 		}
 	}
 	// 索引迭代
@@ -265,7 +265,7 @@ impl Tr {
 		let mut t = self.0.lock().unwrap();
 		match t.state {
 			TxState::Ok => t.tab_size(self, ware_name, tab_name, cb),
-			_ => Some(Err(String::from("InvalidState"))),
+			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
 		}
 	}
 	// 创建、修改或删除表
@@ -276,7 +276,7 @@ impl Tr {
 		}
 		match t.state {
 			TxState::Ok => t.alter(self, ware_name, tab_name, meta, cb),
-			_ => Some(Err(String::from("InvalidState"))),
+			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
 		}
 	}
 	// 表改名
@@ -287,7 +287,7 @@ impl Tr {
 		}
 		match t.state {
 			TxState::Ok => t.rename(self, ware_name, old_name, new_name, cb),
-			_ => Some(Err(String::from("InvalidState"))),
+			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
 		}
 	}
 
@@ -394,7 +394,7 @@ struct Tx {
 	ware_log_map: FnvHashMap<Atom, Arc<WareSnapshot>>,// 库名对应库快照
 	state: TxState,
 	_timer_ref: usize,
-	tab_txns: FnvHashMap<Atom, Arc<TabTxn>>, //表事务表
+	tab_txns: FnvHashMap<(Atom, Atom), Arc<TabTxn>>, //表事务表
 	meta_txns: FnvHashMap<Atom, Arc<MetaTxn>>, //元信息事务表
 	monitors: OrdMap<Tree<usize, Arc<Monitor>>>, //监听器列表
 	mgr: Mgr,
@@ -495,7 +495,7 @@ impl Tx {
 		});
 
 		//处理每个表的提交
-		for (tab_name, val) in self.tab_txns.iter_mut() {
+		for (txn_name, val) in self.tab_txns.iter_mut() {
 			match val.commit(bf.clone()) {
 				Some(r) => {
 					match r {
@@ -504,7 +504,7 @@ impl Tx {
 								match v {
 									RwLog::Write(value) => {
 										for Entry(_, monitor) in self.monitors.iter(None, false){
-											monitor.notify(Event{ware: Atom::from(""), tab: tab_name.clone(), other: EventType::Tab{key:k.clone(), value: value.clone()}}, self.mgr.clone())
+											monitor.notify(Event{ware: txn_name.0.clone(), tab: txn_name.1.clone(), other: EventType::Tab{key:k.clone(), value: value.clone()}}, self.mgr.clone())
 										}
 									},
 									_ => (),
@@ -873,7 +873,9 @@ impl Tx {
 	}
 	// 创建表
 	fn build(&mut self, ware_name: &Atom, tab_name: &Atom, cb: Box<Fn(SResult<Arc<TabTxn>>)>) -> Option<SResult<Arc<TabTxn>>> {
-		let txn = match self.tab_txns.get(tab_name) {
+		//let txn_key = Atom::from(String::from((*ware_name).as_str()) + "##" + tab_name.as_str());
+		let txn_key = (ware_name.clone(), tab_name.clone());
+		let txn = match self.tab_txns.get(&txn_key) {
 			Some(r) => return Some(Ok(r.clone())),
 			_ => match self.ware_log_map.get(ware_name) {
 				Some(ware) => match ware.tab_txn(tab_name, &self.id, self.writable, cb) {
@@ -889,7 +891,7 @@ impl Tx {
 				_ => return Some(Err(String::from("WareNotFound")))
 			}
 		};
-		self.tab_txns.insert(tab_name.clone(), txn.clone());
+		self.tab_txns.insert(txn_key, txn.clone());
 		Some(Ok(txn))
 	}
 	// 处理同步返回的数量结果
@@ -1130,8 +1132,8 @@ fn test_memery_db_mgr(){
 									Some(ref mut v) => {
 										println!("kkkkkkkkkkkkk{:?}", v.len());
 										let mut buf = ReadBuffer::new(Arc::make_mut(v),0);
-										//let p = Player::decode(&mut buf);
-										//println!("{:?}", p);
+										let p = Player::decode(&mut buf);
+										println!("{:?}", p);
 									},
 									None => (),
 								}
