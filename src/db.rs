@@ -12,8 +12,8 @@ use fnv::FnvHashMap;
 
 use pi_lib::atom::Atom;
 use pi_lib::guid::Guid;
-use pi_lib::sinfo::StructInfo;
-use pi_lib::bon::ReadBuffer;
+use pi_lib::sinfo::EnumType;
+use pi_lib::bon::{ReadBuffer, Decode, Encode, WriteBuffer};
 
 
 // 系统表的前缀
@@ -32,6 +32,30 @@ pub type TxCallback = Arc<Fn(SResult<()>)>;
 pub type TxQueryCallback = Arc<Fn(SResult<Vec<TabKV>>)>;
 
 pub type Filter = Option<Arc<Fn(Bin)-> Option<Bin>>>;
+
+pub struct TabMeta {
+	pub k: EnumType,
+	pub v: EnumType
+}
+
+impl TabMeta{
+	pub fn new(k: EnumType, v: EnumType) -> TabMeta{
+		TabMeta{k, v}
+	}
+}
+
+impl Decode for TabMeta{
+	fn decode(bb: &mut ReadBuffer) -> Self{
+		TabMeta{k: EnumType::decode(bb), v: EnumType::decode(bb)}
+	}
+}
+
+impl Encode for TabMeta{
+	fn encode(&self, bb: &mut WriteBuffer){
+		self.k.encode(bb);
+		self.v.encode(bb);
+	}
+}
 
 //事务
 pub trait Txn {
@@ -92,7 +116,7 @@ pub trait TabTxn : Txn{
 // 每个Ware的元信息事务
 pub trait MetaTxn : Txn {
 	// 创建表、修改指定表的元数据
-	fn alter(&self, tab: &Atom, meta: Option<Arc<StructInfo>>, cb: TxCallback) -> DBResult;
+	fn alter(&self, tab: &Atom, meta: Option<Arc<TabMeta>>, cb: TxCallback) -> DBResult;
 	// 快照拷贝表
 	fn snapshot(&self, tab: &Atom, from: &Atom, cb: TxCallback) -> DBResult;
 	// 修改指定表的名字
@@ -122,7 +146,7 @@ pub trait Ware {
 	// 列出全部的表
 	fn list(&self) -> Box<Iterator<Item=Atom>>;
 	// 表的元信息
-	fn tab_info(&self, tab_name: &Atom) -> Option<Arc<StructInfo>>;
+	fn tab_info(&self, tab_name: &Atom) -> Option<Arc<TabMeta>>;
 	// 创建当前表结构快照
 	fn snapshot(&self) -> Arc<WareSnapshot>;
 }
@@ -131,11 +155,11 @@ pub trait WareSnapshot {
 	// 列出全部的表
 	fn list(&self) -> Box<Iterator<Item=Atom>>;
 	// 表的元信息
-	fn tab_info(&self, tab_name: &Atom) -> Option<Arc<StructInfo>>;
+	fn tab_info(&self, tab_name: &Atom) -> Option<Arc<TabMeta>>;
 	// 检查该表是否可以创建
-	fn check(&self, tab: &Atom, meta: &Option<Arc<StructInfo>>) -> SResult<()>;
+	fn check(&self, tab: &Atom, meta: &Option<Arc<TabMeta>>) -> SResult<()>;
 	// 新增 修改 删除 表
-	fn alter(&self, tab_name: &Atom, meta: Option<Arc<StructInfo>>);
+	fn alter(&self, tab_name: &Atom, meta: Option<Arc<TabMeta>>);
 	// 创建指定表的表事务
 	fn tab_txn(&self, tab_name: &Atom, id: &Guid, writable: bool, cb: Box<Fn(SResult<Arc<TabTxn>>)>) -> Option<SResult<Arc<TabTxn>>>;
 	// 创建一个meta事务
@@ -187,7 +211,7 @@ impl ToString for TxState{
  * 表键值条目
  * @example
  */
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Debug)]
 pub struct TabKV {
 	pub ware: Atom,
 	pub tab: Atom,

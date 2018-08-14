@@ -10,10 +10,10 @@ use fnv::FnvHashMap;
 use pi_lib::ordmap::{OrdMap, Entry, ImOrdMap};
 use pi_lib::asbtree::{Tree, new};
 use pi_lib::atom::Atom;
-use pi_lib::sinfo::StructInfo;
+use pi_lib::sinfo::EnumType;
 use pi_lib::guid::{Guid, GuidGen};
 
-use db::{SResult, DBResult, IterResult, KeyIterResult, Filter, TabKV, TxCallback, TxQueryCallback, TxState, MetaTxn, TabTxn, Ware, WareSnapshot, Bin, RwLog};
+use db::{SResult, DBResult, IterResult, KeyIterResult, Filter, TabKV, TxCallback, TxQueryCallback, TxState, MetaTxn, TabTxn, Ware, WareSnapshot, Bin, RwLog, TabMeta};
 
 // 表库及事务管理器
 #[derive(Clone)]
@@ -47,7 +47,7 @@ impl Mgr {
 		self.1.lock().unwrap().unregister(ware_name)
 	}
 	// 表的元信息
-	pub fn tab_info(&self, ware_name:&Atom, tab_name: &Atom) -> Option<Arc<StructInfo>> {
+	pub fn tab_info(&self, ware_name:&Atom, tab_name: &Atom) -> Option<Arc<TabMeta>> {
 		match self.find(ware_name) {
 			Some(b) => b.tab_info(tab_name),
 			_ => None
@@ -81,7 +81,7 @@ pub struct Event {
 	pub other: EventType
 }
 pub enum EventType{
-	Meta(Option<StructInfo>),
+	Meta(Option<EnumType>),
 	Tab{key: Bin, value: Option<Bin>},
 }
 
@@ -254,7 +254,7 @@ impl Tr {
 		}
 	}
 	// 表的元信息
-	pub fn tab_info(&self, ware_name:&Atom, tab_name: &Atom) -> Option<Arc<StructInfo>> {
+	pub fn tab_info(&self, ware_name:&Atom, tab_name: &Atom) -> Option<Arc<TabMeta>> {
 		match self.0.lock().unwrap().ware_log_map.get(ware_name) {
 			Some(ware) => ware.tab_info(tab_name),
 			_ => None
@@ -269,7 +269,7 @@ impl Tr {
 		}
 	}
 	// 创建、修改或删除表
-	pub fn alter(&self, ware_name:&Atom, tab_name: &Atom, meta: Option<Arc<StructInfo>>, cb: TxCallback) -> DBResult {
+	pub fn alter(&self, ware_name:&Atom, tab_name: &Atom, meta: Option<Arc<TabMeta>>, cb: TxCallback) -> DBResult {
 		let mut t = self.0.lock().unwrap();
 		if !t.writable {
 			return Some(Err(String::from("Readonly")))
@@ -843,7 +843,7 @@ impl Tx {
 		None
 	}
 	// 新增 修改 删除 表
-	fn alter(&mut self, tr: &Tr, ware_name: &Atom, tab_name: &Atom, meta: Option<Arc<StructInfo>>, cb: TxCallback) -> DBResult {
+	fn alter(&mut self, tr: &Tr, ware_name: &Atom, tab_name: &Atom, meta: Option<Arc<TabMeta>>, cb: TxCallback) -> DBResult {
 		self.state = TxState::Doing;
 		let ware = match self.ware_log_map.get(ware_name) {
 			Some(w) => match w.check(tab_name, &meta) { // 检查
@@ -1052,6 +1052,8 @@ use memery_db;
 use pi_lib::bon::{WriteBuffer, ReadBuffer, Encode, Decode};
 #[cfg(test)]
 use std::collections::HashMap;
+#[cfg(test)]
+use pi_lib::sinfo::StructInfo;
 
 #[cfg(test)]
 #[derive(Debug)]
@@ -1088,10 +1090,9 @@ fn test_memery_db_mgr(){
 
 	let tr = mgr.transaction(true);
 	let tr1 = tr.clone();
-	let mut sinfo = StructInfo::new(Atom::from("Player"), 55555555);
+	let sinfo = EnumType::Struct(Arc::new(StructInfo::new(Atom::from("Player"), 55555555)));
 	let mut m = HashMap::new();
 	m.insert(Atom::from("class"), Atom::from("memery"));
-	sinfo.notes = Some(m);
 	let alter_back = Arc::new(move|r: SResult<()>|{
 		println!("alter: {:?}", r);
 		assert!(r.is_ok());
@@ -1202,7 +1203,10 @@ fn test_memery_db_mgr(){
 		};
 		write();
 	});
-	let r = tr.alter(&Atom::from("memery"), &Atom::from("Player"), Some(Arc::new(sinfo)), alter_back.clone());
+	let r = tr.alter(&Atom::from("memery"), &Atom::from("Player"), Some(Arc::new(TabMeta{
+		k:EnumType::U8,
+		v:sinfo
+	})), alter_back.clone());
 	if r.is_some(){
 		alter_back(r.unwrap());
 	}
