@@ -9,9 +9,9 @@ use pi_lib::ordmap::{OrdMap, Entry, Iter as OIter, Keys};
 use pi_lib::asbtree::{Tree};
 use pi_lib::atom::{Atom};
 use pi_lib::guid::Guid;
-use pi_lib::sinfo::StructInfo;
+use pi_lib::sinfo::EnumType;
 
-use db::{Bin, TabKV, SResult, DBResult, IterResult, KeyIterResult, NextResult, TxCallback, TxQueryCallback, Txn, TabTxn, MetaTxn, Tab, OpenTab, Ware, WareSnapshot, Filter, TxState, Iter, CommitResult, RwLog, Bon};
+use db::{Bin, TabKV, SResult, DBResult, IterResult, KeyIterResult, NextResult, TxCallback, TxQueryCallback, Txn, TabTxn, MetaTxn, Tab, OpenTab, Ware, WareSnapshot, Filter, TxState, Iter, CommitResult, RwLog, Bon, TabMeta};
 use tabs::{TabLog, Tabs, Prepare};
 
 
@@ -61,7 +61,7 @@ impl Ware for DB {
 		TIMEOUT
 	}
 	// 表的元信息
-	fn tab_info(&self, tab_name: &Atom) -> Option<Arc<StructInfo>> {
+	fn tab_info(&self, tab_name: &Atom) -> Option<Arc<TabMeta>> {
 		self.0.read().unwrap().get(tab_name)
 	}
 	// 获取当前表结构快照
@@ -79,15 +79,15 @@ impl WareSnapshot for DBSnapshot {
 		Box::new(self.1.borrow().list())
 	}
 	// 表的元信息
-	fn tab_info(&self, tab_name: &Atom) -> Option<Arc<StructInfo>> {
+	fn tab_info(&self, tab_name: &Atom) -> Option<Arc<TabMeta>> {
 		self.1.borrow().get(tab_name)
 	}
 	// 检查该表是否可以创建
-	fn check(&self, _tab: &Atom, _meta: &Option<Arc<StructInfo>>) -> SResult<()> {
+	fn check(&self, _tab: &Atom, _meta: &Option<Arc<TabMeta>>) -> SResult<()> {
 		Ok(())
 	}
 	// 新增 修改 删除 表
-	fn alter(&self, tab_name: &Atom, meta: Option<Arc<StructInfo>>) {
+	fn alter(&self, tab_name: &Atom, meta: Option<Arc<TabMeta>>) {
 		self.1.borrow_mut().alter(tab_name, meta)
 	}
 	// 创建指定表的表事务
@@ -499,7 +499,7 @@ pub struct MemeryMetaTxn();
 
 impl MetaTxn for MemeryMetaTxn {
 	// 创建表、修改指定表的元数据
-	fn alter(&self, _tab: &Atom, _meta: Option<Arc<StructInfo>>, _cb: TxCallback) -> DBResult{
+	fn alter(&self, _tab: &Atom, _meta: Option<Arc<TabMeta>>, _cb: TxCallback) -> DBResult{
 		Some(Ok(()))
 	}
 	// 快照拷贝表

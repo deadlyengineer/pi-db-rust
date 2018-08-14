@@ -10,17 +10,17 @@ use fnv::{FnvHashMap, FnvHashSet};
 use pi_lib::ordmap::{OrdMap, ActionResult, Keys};
 use pi_lib::asbtree::{Tree, new};
 use pi_lib::atom::Atom;
-use pi_lib::sinfo::StructInfo;
+use pi_lib::sinfo::EnumType;
 use pi_lib::guid::Guid;
 
-use db::{SResult, Tab, TabTxn, OpenTab, Bin, RwLog};
+use db::{SResult, Tab, TabTxn, OpenTab, Bin, RwLog, TabMeta};
 
 // 表结构及修改日志
 pub struct TabLog<T: Clone + Tab> {
 	map: OrdMap<Tree<Atom, TabInfo<T>>>,
 	old_map: OrdMap<Tree<Atom, TabInfo<T>>>, // 用于判断mgr中tabs是否修改过
 	meta_names: FnvHashSet<Atom>, //元信息表的名字
-	alter_logs: FnvHashMap<(Atom, usize), Option<Arc<StructInfo>>>, // 记录每个被改过元信息的表
+	alter_logs: FnvHashMap<(Atom, usize), Option<Arc<TabMeta>>>, // 记录每个被改过元信息的表
 	rename_logs: FnvHashMap<Atom, (Atom, usize)>, // 新名字->(源名字, 版本号)
 }
 impl<T: Clone + Tab> TabLog<T> {
@@ -29,7 +29,7 @@ impl<T: Clone + Tab> TabLog<T> {
 		TabIter::new(self.map.clone(), self.map.keys(None, false))
 	}
 	// 获取指定的表结构
-	pub fn get(&self, tab: &Atom) -> Option<Arc<StructInfo>> {
+	pub fn get(&self, tab: &Atom) -> Option<Arc<TabMeta>> {
 		match self.map.get(tab) {
 			Some(t) => Some(t.meta.clone()),
 			_ => None
@@ -46,14 +46,14 @@ impl<T: Clone + Tab> TabLog<T> {
 		}
 	}
 	// 表的元信息
-	pub fn tab_info(&self, tab_name: &Atom) -> Option<Arc<StructInfo>> {
+	pub fn tab_info(&self, tab_name: &Atom) -> Option<Arc<TabMeta>> {
 		match self.map.get(tab_name) {
 			Some(info) => Some(info.meta.clone()),
 			_ => None,
 		}
 	}
 	// 新增 修改 删除 表
-	pub fn alter(&mut self, tab_name: &Atom, meta: Option<Arc<StructInfo>>) {
+	pub fn alter(&mut self, tab_name: &Atom, meta: Option<Arc<TabMeta>>) {
 		// 先查找rename_logs，获取该表的源名字及版本，然后修改alter_logs
 		let (src_name, ver) = match self.rename_logs.get(tab_name) {
 			Some(v) => v.clone(),
@@ -233,7 +233,7 @@ impl<T: Clone + Tab> Tabs<T> {
 		TabIter::new(self.map.clone(), self.map.keys(None, false))
 	}
 	// 获取指定的表结构
-	pub fn get(&self, tab: &Atom) -> Option<Arc<StructInfo>> {
+	pub fn get(&self, tab: &Atom) -> Option<Arc<TabMeta>> {
 		match self.map.get(tab) {
 			Some(t) => Some(t.meta.clone()),
 			_ => None
@@ -250,14 +250,14 @@ impl<T: Clone + Tab> Tabs<T> {
 		}
 	}
 	// 获取表的元信息
-	pub fn get_tab_meta(&self, tab: &Atom) -> Option<Arc<StructInfo>> {
+	pub fn get_tab_meta(&self, tab: &Atom) -> Option<Arc<TabMeta>> {
 		match self.map.get(tab) {
 			Some(info) => Some(info.meta.clone()),
 			_ => None,
 		}
 	}
 	// 设置表的元信息
-	pub fn set_tab_meta(&mut self, tab: Atom, meta: Arc<StructInfo>) -> bool {
+	pub fn set_tab_meta(&mut self, tab: Atom, meta: Arc<TabMeta>) -> bool {
 		self.map.insert(tab, TabInfo::new(meta))
 	}
 
@@ -311,11 +311,11 @@ impl<T: Clone + Tab> Tabs<T> {
 // 表信息
 #[derive(Clone)]
 pub struct TabInfo<T: Clone + Tab> {
-	meta: Arc<StructInfo>,
+	meta:  Arc<TabMeta>,
 	init: Arc<Mutex<TabInit<T>>>,
 }
 impl<T: Clone + Tab> TabInfo<T> {
-	fn new(meta: Arc<StructInfo>) -> Self {
+	fn new(meta: Arc<TabMeta>) -> Self {
 		TabInfo{
 			meta: meta,
 			init: Arc::new(Mutex::new(TabInit {
