@@ -1,3 +1,4 @@
+#![feature(fnbox)]
 #![crate_type = "rlib"]
 #![feature(custom_derive,asm,box_syntax,box_patterns)]
 #![feature(pointer_methods)]
@@ -14,3 +15,4 @@ pub mod db;
 pub mod mgr;
 pub mod tabs;
 pub mod memery_db;
+pub mod util;

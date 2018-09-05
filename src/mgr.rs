@@ -1,7 +1,7 @@
 /**
  * 基于2pc的db管理器，每个db实现需要将自己注册到管理器上
  */
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::mem;
 
@@ -309,14 +309,14 @@ const TIMEOUT: usize = 100;
 struct Manager {
 	// 定时轮
 	// 管理用的弱引用事务
-	weak_map: FnvHashMap<Guid, Weak<Mutex<Tx>>>,
+	//weak_map: FnvHashMap<Guid, Weak<Mutex<Tx>>>,
 	monitors: OrdMap<Tree<usize, Arc<Monitor>>>,//监听器列表
 }
 impl Manager {
 	// 注册管理器
 	fn new() -> Self {
 		Manager {
-			weak_map: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
+			//weak_map: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
 			monitors: OrdMap::new(Tree::new())
 		}
 	}
@@ -339,7 +339,7 @@ impl Manager {
 			monitors: self.monitors.clone(),
 			mgr:mgr,
 		})));
-		self.weak_map.insert(id, Arc::downgrade(&(tr.0)));
+		//self.weak_map.insert(id, Arc::downgrade(&(tr.0)));
 		tr
 	}
 

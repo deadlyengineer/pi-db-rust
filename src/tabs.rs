@@ -10,7 +10,6 @@ use fnv::{FnvHashMap, FnvHashSet};
 use pi_lib::ordmap::{OrdMap, ActionResult, Keys};
 use pi_lib::asbtree::{Tree, new};
 use pi_lib::atom::Atom;
-use pi_lib::sinfo::EnumType;
 use pi_lib::guid::Guid;
 
 use db::{SResult, Tab, TabTxn, OpenTab, Bin, RwLog, TabMeta};
