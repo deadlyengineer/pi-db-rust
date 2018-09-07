@@ -5,5 +5,7 @@ authors = ["zmythleo <zmythleo@gmail.com>"]
 
 [dependencies]
 pi_lib = { path = "../pi_lib" }
+pi_base = { path = "../pi_base" }
 fnv = "1.0.3"
+crc = "1.8.1"
 parking_lot = {version = "0.5", features = ["nightly"]}
