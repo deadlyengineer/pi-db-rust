@@ -85,7 +85,7 @@ fn read_head(file: SharedFile, pos: u64, ware: Atom,
 				},
 			}
 		});
-		file.pread(pos, pos as usize + 5, read_head);
+		file.pread(pos, 5, read_head);
 }
 
 //检查备份文件中表的元信息
