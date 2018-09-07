@@ -50,7 +50,6 @@ fn get_dump_meta(file: SharedFile, mgr: Mgr, ware: Atom, tab: Atom, callback: *m
 					count = u64::from_le(*(bin[12..20].as_ptr() as *mut u64));
 					checksum = u64::from_le(*(bin[20..28].as_ptr() as *mut u64));
 				}
-				println!("!!!!!!{}, {}, {}, {}", vsn, time, count, checksum);
 				check_table_meta(f, mgr, ware, tab, count, checksum, callback);
 			},
 		}
@@ -241,7 +240,6 @@ fn restore_table(file: SharedFile, pos: u64, mgr: Mgr,
 					callback_error(format!("!!>restore table error, write table failed, count: {}, pos: {}, table: {}, err: {:?}", c, pos, (&ware).to_string() + "/" + &tab, e), callback);
 				},
 				Ok(_) => {
-					println!("!!!!!!write ok");
 					//写成功
 					let prepare = Arc::new(move |rr: SResult<()>| {
 						let file_copy1 = file_copy0.clone();
@@ -251,11 +249,9 @@ fn restore_table(file: SharedFile, pos: u64, mgr: Mgr,
 						match rr {
 							Err(ee) => {
 								//预提交失败
-								println!("!!!!!!prepare failed");
 								callback_error(format!("!!>restore table error, prepare table failed, count: {}, pos: {}, table: {}, err: {:?}", c, pos, (&ware_copy0).to_string() + "/" + &tab_copy0, ee), callback);
 							},
 							Ok(_) => {
-								println!("!!!!!!prepare ok");
 								//预提交成功
 								let commit = Arc::new(move |rrr: SResult<()>| {
 									match rrr {
@@ -264,7 +260,6 @@ fn restore_table(file: SharedFile, pos: u64, mgr: Mgr,
 											callback_error(format!("!!>restore table error, commit table failed, count: {}, pos: {}, table: {}, err: {:?}", c, pos, (&ware_copy1).to_string() + "/" + &tab_copy1, eee), callback);
 										}
 										Ok(_) => {
-											println!("!!!!!!commit ok");
 											//提交成功，继续恢复下一个键值对
 											read_key(file_copy1.clone(), pos, mgr_copy1.clone(), ware_copy1.clone(), tab_copy1.clone(), count, checksum, Vec::new(), c, digest, callback);
 										},
@@ -278,13 +273,8 @@ fn restore_table(file: SharedFile, pos: u64, mgr: Mgr,
 						};
 					});
 					match tr_copy0.clone().prepare(prepare.clone()) {
-						None => {
-							println!("!!!!!!!!!!!!!!0");
-						},
-						Some(rr) => {
-							println!("!!!!!!!!!!!!!!1");
-							prepare(rr);
-						}, //预提交
+						None => (),
+						Some(rr) => prepare(rr), //预提交
 					};
 				},
 			};

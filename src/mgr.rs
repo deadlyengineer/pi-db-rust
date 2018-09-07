@@ -128,9 +128,7 @@ impl Tr {
 	}
 	// 预提交一个事务
 	pub fn prepare(&self, cb: TxCallback) -> DBResult {
-		println!("7777777777777777777777777777777777777777777777777");
 		let mut t = self.0.lock().unwrap();
-		println!("77777777777777777777777777777777777777777777777771");
 		match t.state {
 			TxState::Ok => t.prepare(self, cb),
 			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
