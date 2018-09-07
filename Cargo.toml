@@ -7,5 +7,5 @@ authors = ["zmythleo <zmythleo@gmail.com>"]
 pi_lib = { path = "../pi_lib" }
 pi_base = { path = "../pi_base" }
 fnv = "1.0.3"
-parking_lot = {version = "0.5", features = ["nightly"]}
+parking_lot = {version = "*", features = ["nightly"]}
 crc = "*"
