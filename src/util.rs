@@ -78,8 +78,8 @@ fn read_head(file: SharedFile, pos: u64, ware: Atom,
 					} else {
 						//头信息存在，则继续读体
 						let mut data = ReadBuffer::new(&bin[..], 0);
-						let next_pos = pos + data.head as u64;
-						let len = data.read_lengthen() as usize;
+						let next_pos = pos + data.read_lengthen() as u64;
+						let len = data.head;
 						read_body(f, next_pos, len);
 					}
 				},
@@ -121,7 +121,6 @@ fn check_table_meta(file: SharedFile, mgr: Mgr, ware: Atom, tab: Atom, count: u6
 							meta.encode(&mut buf);
 							let meta_buf = ReadBuffer::new(&buf.get_byte()[..], 0);
 							if data != meta_buf {
-								println!("!!!!!!{:?}, {:?}", bin, buf.get_byte());
 								//元信息不匹配
 								return callback_error(format!("!!>table meta not match, table: {}", (&ware_copy).to_string() + "/" + &tab_copy), callback);
 							}
@@ -133,7 +132,6 @@ fn check_table_meta(file: SharedFile, mgr: Mgr, ware: Atom, tab: Atom, count: u6
 				},
 			}
 		});
-		println!("!!!!!!pos: {}, len: {}", pos, len);
 		shared.pread(pos, len, read);
 	});
 	read_head(file, 28, ware, tab, read_body, callback);
@@ -243,6 +241,7 @@ fn restore_table(file: SharedFile, pos: u64, mgr: Mgr,
 					callback_error(format!("!!>restore table error, write table failed, count: {}, pos: {}, table: {}, err: {:?}", c, pos, (&ware).to_string() + "/" + &tab, e), callback);
 				},
 				Ok(_) => {
+					println!("!!!!!!write ok");
 					//写成功
 					let prepare = Arc::new(move |rr: SResult<()>| {
 						let file_copy1 = file_copy0.clone();
@@ -252,9 +251,11 @@ fn restore_table(file: SharedFile, pos: u64, mgr: Mgr,
 						match rr {
 							Err(ee) => {
 								//预提交失败
+								println!("!!!!!!prepare failed");
 								callback_error(format!("!!>restore table error, prepare table failed, count: {}, pos: {}, table: {}, err: {:?}", c, pos, (&ware_copy0).to_string() + "/" + &tab_copy0, ee), callback);
 							},
 							Ok(_) => {
+								println!("!!!!!!prepare ok");
 								//预提交成功
 								let commit = Arc::new(move |rrr: SResult<()>| {
 									match rrr {
@@ -263,6 +264,7 @@ fn restore_table(file: SharedFile, pos: u64, mgr: Mgr,
 											callback_error(format!("!!>restore table error, commit table failed, count: {}, pos: {}, table: {}, err: {:?}", c, pos, (&ware_copy1).to_string() + "/" + &tab_copy1, eee), callback);
 										}
 										Ok(_) => {
+											println!("!!!!!!commit ok");
 											//提交成功，继续恢复下一个键值对
 											read_key(file_copy1.clone(), pos, mgr_copy1.clone(), ware_copy1.clone(), tab_copy1.clone(), count, checksum, Vec::new(), c, digest, callback);
 										},
@@ -276,8 +278,13 @@ fn restore_table(file: SharedFile, pos: u64, mgr: Mgr,
 						};
 					});
 					match tr_copy0.clone().prepare(prepare.clone()) {
-						None => (),
-						Some(rr) => prepare(rr), //预提交
+						None => {
+							println!("!!!!!!!!!!!!!!0");
+						},
+						Some(rr) => {
+							println!("!!!!!!!!!!!!!!1");
+							prepare(rr);
+						}, //预提交
 					};
 				},
 			};
