@@ -50,6 +50,7 @@ fn get_dump_meta(file: SharedFile, mgr: Mgr, ware: Atom, tab: Atom, callback: *m
 					count = u64::from_le(*(bin[12..20].as_ptr() as *mut u64));
 					checksum = u64::from_le(*(bin[20..28].as_ptr() as *mut u64));
 				}
+				println!("!!!!!!{}, {}, {}, {}", vsn, time, count, checksum);
 				check_table_meta(f, mgr, ware, tab, count, checksum, callback);
 			},
 		}
@@ -120,6 +121,7 @@ fn check_table_meta(file: SharedFile, mgr: Mgr, ware: Atom, tab: Atom, count: u6
 							meta.encode(&mut buf);
 							let meta_buf = ReadBuffer::new(&buf.get_byte()[..], 0);
 							if data != meta_buf {
+								println!("!!!!!!{:?}, {:?}", bin, buf.get_byte());
 								//元信息不匹配
 								return callback_error(format!("!!>table meta not match, table: {}", (&ware_copy).to_string() + "/" + &tab_copy), callback);
 							}
@@ -131,6 +133,7 @@ fn check_table_meta(file: SharedFile, mgr: Mgr, ware: Atom, tab: Atom, count: u6
 				},
 			}
 		});
+		println!("!!!!!!pos: {}, len: {}", pos, len);
 		shared.pread(pos, len, read);
 	});
 	read_head(file, 28, ware, tab, read_body, callback);
@@ -484,58 +487,4 @@ fn iter_ware_write1(r: Result<Option<(Bin, Bin)>, String>, it: Arc<RefCell<Box<I
 			},
 			Err(s) => call_back(Err(s)),
 		}
-}
-
-#[cfg(test)]
-use pi_lib::guid::GuidGen;
-#[cfg(test)]
-use pi_lib::sinfo::EnumType;
-#[cfg(test)]
-use memery_db::DB;
-#[cfg(test)]
-use db::{TabMeta, TabKV};
-#[cfg(test)]
-use pi_base::pi_base_impl::{STORE_TASK_POOL};
-#[cfg(test)]
-use pi_base::worker_pool::WorkerPool;
-
-#[test]
-fn test_dump(){
-	let worker_pool1 = Box::new(WorkerPool::new(3, 1024 * 1024, 1000));
-    worker_pool1.run(STORE_TASK_POOL.clone());
-
-
-	let ware_name = Atom::from("test_dump");
-	let tab_name = Atom::from("tab1");
-	let file = String::from("./") + ware_name.as_str() + "/" + tab_name.as_str();
-	let mgr = Mgr::new(GuidGen::new(0, 0));
-	let db = DB::new();
-	mgr.register(ware_name.clone(), Arc::new(db));
-	let tr = mgr.transaction(true);
-
-	tr.alter(&ware_name, &tab_name, Some(Arc::new(TabMeta::new(EnumType::Str, EnumType::Str))), Arc::new(|r|{}));
-
-	let mut v1 = WriteBuffer::new();
-	v1.write_utf8("1");
-	let v1 = Arc::new(v1.unwrap());
-
-	let mut v2 = WriteBuffer::new();
-	v2.write_utf8("2");
-	let v2 = Arc::new(v2.unwrap());
-
-	let mut item1 = TabKV::new(ware_name.clone(), tab_name.clone(), v1.clone());
-	item1.value = Some(v1.clone());
-	let mut item2 = TabKV::new(ware_name.clone(), tab_name.clone(), v2.clone());
-	item2.value = Some(v2.clone());
-
-	let arr = vec![item1, item2];
-	tr.modify(arr, None, false, Arc::new(|r|{}));
-	
-	tr.prepare(Arc::new(|r| {}));
-	tr.commit(Arc::new(|r| {}));
-
-	dump(&mgr, ware_name.clone(), tab_name.clone(), file, Arc::new(|r|{
-		println!("dump-----------------{:?}", r);
-		assert!(r.is_ok());
-	}));
 }

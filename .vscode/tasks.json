@@ -32,10 +32,7 @@
 		{
 			"type": "shell",
 			"label": "cargo test",
-			"command": "cargo",
-			"args": [
-				"test"
-			],
+			"command": "cargo test -- --nocapture --color always",
 			"problemMatcher": [
 				"$rustc"
 			]
