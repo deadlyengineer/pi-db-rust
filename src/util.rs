@@ -144,8 +144,13 @@ fn read_key(file: SharedFile, pos: u64, mgr: Mgr,
 		let tab_copy = tab.clone();
 		let read_body = Box::new(move |shared: SharedFile, pos: u64, len: usize| {
 			if len == 0 {
-				//读备份文件完成
-				return callback_ok(count, checksum, c, digest, callback);
+				if c == 0 {
+					//读备份文件完成，且恢复完成
+					return callback_ok(count, checksum, c, digest, callback);
+				}
+
+				//恢复剩余数据
+				return restore_table(shared, pos + len as u64, mgr, ware_copy, tab_copy, count, checksum, kvs, c, digest, callback); 
 			}
 
 			let read = Box::new(move |f: SharedFile, result: IOResult<Vec<u8>>| {
@@ -208,7 +213,6 @@ fn read_value(file: SharedFile, pos: u64, mgr: Mgr,
 						let new_c = c + 1;
 						if (new_c % BATCH_RESTORE_LIMIT) == 0 {
 							//恢复
-							kvs_mut.clear();
 							restore_table(f, pos + len as u64, mgr, ware_copy, tab_copy, count, checksum, kvs_mut, new_c, Box::into_raw(digest_mut), callback);
 						} else {
 							//继续加载键值对
