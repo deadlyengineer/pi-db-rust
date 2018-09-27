@@ -23,7 +23,7 @@ pub fn restore(mgr: &Mgr, ware: Atom, tab: Atom, file: Atom, callback: Box<FnBox
 	let file_copy = file.clone();
 	let open = Box::new(move |result: IOResult<AsyncFile>| {
 		match result {
-			Err(e) => panic!("!!!> Restore Table Error, open dump file failed, file: {:?}, err: {:?}", file_copy, e),
+			Err(e) => callback_error(format!("restore table error, open dump file failed, file: {:?}, err: {:?}", file_copy, e), Box::into_raw(callback)),
 			Ok(f) => get_dump_meta(Arc::new(f), mgr_copy, ware, tab, Box::into_raw(callback)),
 		}
 	});
@@ -34,10 +34,10 @@ pub fn restore(mgr: &Mgr, ware: Atom, tab: Atom, file: Atom, callback: Box<FnBox
 fn get_dump_meta(file: SharedFile, mgr: Mgr, ware: Atom, tab: Atom, callback: *mut FnBox(Result<(), String>)) {
 	let read = Box::new(move |f: SharedFile, result: IOResult<Vec<u8>>| {
 		match result {
-			Err(e) => panic!("!!!> Restore Table Error, get dump meta failed, table: {}, err: {:?}", (&ware).to_string() + "/" + &tab, e),
+			Err(e) => callback_error(format!("restore table error, get dump meta failed, table: {}, err: {:?}", (&ware).to_string() + "/" + &tab, e), callback),
 			Ok(bin) => {
 				if bin.len() < 28 {
-					panic!("!!!> Restore Table Error, invalid dump meta, table: {}, bin: {:?}", (&ware).to_string() + "/" + &tab, bin);
+					return callback_error(format!("restore table error, invalid dump meta, table: {}, bin: {:?}", (&ware).to_string() + "/" + &tab, bin), callback);
 				}
 
 				let vsn: u32;		//版本号
@@ -64,13 +64,13 @@ fn read_head(file: SharedFile, pos: u64, ware: Atom,
 			match result {
 				Err(e) => {
 					//读头信息失败
-					callback_error(format!("!!!> Restore Table Error, get head failed, pos: {}, table: {}, err: {:?}", pos, (&ware).to_string() + "/" + &tab, e), callback);
+					callback_error(format!("restore table error, get head failed, pos: {}, table: {}, err: {:?}", pos, (&ware).to_string() + "/" + &tab, e), callback);
 				}
 				Ok(bin) => {
 					let bin_len = bin.len();
 					if (bin_len > 0) && (bin_len < 5) {
 						//头信息不完整
-						callback_error(format!("!!!> Restore Table Error, invalid head, pos: {}, table: {}, bin: {:?}", pos, (&ware).to_string() + "/" + &tab, bin), callback);
+						callback_error(format!("restore table error, invalid head, pos: {}, table: {}, bin: {:?}", pos, (&ware).to_string() + "/" + &tab, bin), callback);
 					} else if bin_len == 0 {
 						//头信息不存在，则继续
 						read_body(f, pos, bin_len);
@@ -94,26 +94,26 @@ fn check_table_meta(file: SharedFile, mgr: Mgr, ware: Atom, tab: Atom, count: u6
 	let read_body = Box::new(move |shared: SharedFile, pos: u64, len: usize| {
 		if len == 0 {
 			//表元信息不存在
-			return callback_error(format!("!!!> Restore Table Error, table meta empty, table: {}", (&ware_copy).to_string() + "/" + &tab_copy), callback);
+			return callback_error(format!("restore table error, table meta empty, table: {}", (&ware_copy).to_string() + "/" + &tab_copy), callback);
 		}
 
 		let read = Box::new(move |f: SharedFile, result: IOResult<Vec<u8>>| {
 			match result {
 				Err(e) => {
 					//读元信息失败
-					callback_error(format!("!!!> Restore Table Error, get table meta failed, table: {}, err: {:?}", (&ware_copy).to_string() + "/" + &tab_copy, e), callback);
+					callback_error(format!("restore table error, get table meta failed, table: {}, err: {:?}", (&ware_copy).to_string() + "/" + &tab_copy, e), callback);
 				}
 				Ok(bin) => {
 					if bin.len() < len {
 						//元信息不完整
-						return callback_error(format!("!!!> Restore Table Error, invalid table meta, table: {}, bin: {:?}", (&ware_copy).to_string() + "/" + &tab_copy, bin), callback);
+						return callback_error(format!("restore table error, invalid table meta, table: {}, bin: {:?}", (&ware_copy).to_string() + "/" + &tab_copy, bin), callback);
 					}
 
 					let data = ReadBuffer::new(&bin[..], 0);
 					match mgr.tab_info(&ware_copy, &tab_copy) {
 						None => {
 							//表未初始化
-							callback_error(format!("!!!> Restore Table Error, table not init, table: {}", (&ware_copy).to_string() + "/" + &tab_copy), callback);
+							callback_error(format!("restore table error, table not init, table: {}", (&ware_copy).to_string() + "/" + &tab_copy), callback);
 						},
 						Some(meta) => {
 							let mut buf = WriteBuffer::new();
@@ -121,7 +121,7 @@ fn check_table_meta(file: SharedFile, mgr: Mgr, ware: Atom, tab: Atom, count: u6
 							let meta_buf = ReadBuffer::new(&buf.get_byte()[..], 0);
 							if data != meta_buf {
 								//元信息不匹配
-								return callback_error(format!("!!!> Restore Table Error, table meta not match, table: {}", (&ware_copy).to_string() + "/" + &tab_copy), callback);
+								return callback_error(format!("restore table error, table meta not match, table: {}", (&ware_copy).to_string() + "/" + &tab_copy), callback);
 							}
 
 							let digest = Box::into_raw(Box::new(Digest::new_with_initial(crc64::ECMA, 0u64)));
@@ -152,13 +152,13 @@ fn read_key(file: SharedFile, pos: u64, mgr: Mgr,
 				match result {
 					Err(e) => {
 						//读关键字失败
-						callback_error(format!("!!!> Restore Table Error, get key failed, pos: {}, len: {}, table: {}, err: {:?}", pos, len, (&ware_copy).to_string() + "/" + &tab_copy, e), callback);
+						callback_error(format!("restore table error, get key failed, pos: {}, len: {}, table: {}, err: {:?}", pos, len, (&ware_copy).to_string() + "/" + &tab_copy, e), callback);
 					},
 					Ok(bin) => {
 						let bin_len =  bin.len();
 						if bin_len < len {
 							//关键字不完整
-							return callback_error(format!("!!!> Restore Table Error, invalid key, pos: {}, len: {}, table: {}", pos, len, (&ware_copy).to_string() + "/" + &tab_copy), callback);
+							return callback_error(format!("restore table error, invalid key, pos: {}, len: {}, table: {}", pos, len, (&ware_copy).to_string() + "/" + &tab_copy), callback);
 						}
 					
 						let key = WriteBuffer::with_bytes(bin, bin_len);
@@ -182,13 +182,13 @@ fn read_value(file: SharedFile, pos: u64, mgr: Mgr,
 				match result {
 					Err(e) => {
 						//读值失败
-						callback_error(format!("!!!> Restore Table Error, get value failed, pos: {}, len: {}, table: {}, err: {:?}", pos, len, (&ware_copy).to_string() + "/" + &tab_copy, e), callback);
+						callback_error(format!("restore table error, get value failed, pos: {}, len: {}, table: {}, err: {:?}", pos, len, (&ware_copy).to_string() + "/" + &tab_copy, e), callback);
 					},
 					Ok(bin) => {
 						let bin_len = bin.len();
 						if bin_len < len {
 							//值不完整
-							return callback_error(format!("!!!> Restore Table Error, invalid value, pos: {}, len: {}, table: {}", pos, len, (&ware_copy).to_string() + "/" + &tab_copy), callback);
+							return callback_error(format!("restore table error, invalid value, pos: {}, len: {}, table: {}", pos, len, (&ware_copy).to_string() + "/" + &tab_copy), callback);
 						}
 					
 						let value = WriteBuffer::with_bytes(bin, bin_len);
@@ -237,7 +237,7 @@ fn restore_table(file: SharedFile, pos: u64, mgr: Mgr,
 			match r {
 				Err(e) => {
 					//写失败
-					callback_error(format!("!!!> Restore Table Error, write table failed, count: {}, pos: {}, table: {}, err: {:?}", c, pos, (&ware).to_string() + "/" + &tab, e), callback);
+					callback_error(format!("restore table error, write table failed, count: {}, pos: {}, table: {}, err: {:?}", c, pos, (&ware).to_string() + "/" + &tab, e), callback);
 				},
 				Ok(_) => {
 					//写成功
@@ -249,15 +249,15 @@ fn restore_table(file: SharedFile, pos: u64, mgr: Mgr,
 						match rr {
 							Err(ee) => {
 								//预提交失败
-								callback_error(format!("!!!> Restore Table Error, prepare table failed, count: {}, pos: {}, table: {}, err: {:?}", c, pos, (&ware_copy0).to_string() + "/" + &tab_copy0, ee), callback);
+								callback_error(format!("restore table error, prepare table failed, count: {}, pos: {}, table: {}, err: {:?}", c, pos, (&ware_copy0).to_string() + "/" + &tab_copy0, ee), callback);
 							},
 							Ok(_) => {
 								//预提交成功
 								let commit = Arc::new(move |rrr: SResult<()>| {
 									match rrr {
 										Err(eee) => {
-											//提交成功
-											callback_error(format!("!!!> Restore Table Error, commit table failed, count: {}, pos: {}, table: {}, err: {:?}", c, pos, (&ware_copy1).to_string() + "/" + &tab_copy1, eee), callback);
+											//提交失败
+											callback_error(format!("restore table error, commit table failed, count: {}, pos: {}, table: {}, err: {:?}", c, pos, (&ware_copy1).to_string() + "/" + &tab_copy1, eee), callback);
 										}
 										Ok(_) => {
 											//提交成功，继续恢复下一个键值对
@@ -301,7 +301,7 @@ fn callback_ok(count: u64, checksum: u64, c: u64, d: *mut Digest, func: *mut FnB
 			//校验成功
 			callback(Ok(()));
 		} else {
-			callback(Err(format!("!!!> Restore Table Error, table checksum failed, checksum: {:?}, count: {:?}", (s, checksum), (c, count))));
+			callback(Err(format!("restore table error, table checksum failed, checksum: {:?}, count: {:?}", (s, checksum), (c, count))));
 		}
 	}
 }
