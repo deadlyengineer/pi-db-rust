@@ -403,6 +403,11 @@ struct Tx {
 impl Tx {
 	// 预提交事务
 	fn prepare(&mut self, tr: &Tr, cb: TxCallback) -> DBResult {
+		//如果预提交内容为空，直接返回预提交成功
+		if self.meta_txns.len() == 0 && self.tab_txns.len() == 0 {
+			self.state = TxState::PreparOk;
+			return Some(Ok(()));
+		}
 		self.state = TxState::Preparing;
 		// 先检查mgr上的meta alter的预提交
 		let alter_len = self.meta_txns.len();
@@ -853,7 +858,7 @@ impl Tx {
 				},
 				Err(s) => return self.single_result_err(Err(s))
 			},
-			_ => return self.single_result_err(Err(String::from("ware not found")))
+			_ => return self.single_result_err(Err(format!("ware not found:{}", ware_name.as_str()) ))
 		};
 		let id = &self.id;
 		let txn = self.meta_txns.entry(ware_name.clone()).or_insert_with(|| {

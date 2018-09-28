@@ -311,8 +311,9 @@ impl TabTxn for RefMemeryTxn {
 		for tabkv in arr.iter() {
 			let value = match txn.get(tabkv.key.clone()) {
 				Some(v) => Some(v),
-				_ => Some(Arc::new(Vec::new()))
+				_ => None
 			};
+
 			value_arr.push(
 				TabKV{
 				ware: tabkv.ware.clone(),
