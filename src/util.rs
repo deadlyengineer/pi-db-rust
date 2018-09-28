@@ -77,9 +77,9 @@ fn read_head(file: SharedFile, pos: u64, ware: Atom,
 					} else {
 						//头信息存在，则继续读体
 						let mut data = ReadBuffer::new(&bin[..], 0);
-						let next_pos = pos + data.read_lengthen() as u64;
-						let len = data.head;
-						read_body(f, next_pos, len);
+						let len = data.read_lengthen();
+						let next_pos = pos + data.head as u64;
+						read_body(f, next_pos, len as usize);
 					}
 				},
 			}
@@ -144,8 +144,9 @@ fn read_key(file: SharedFile, pos: u64, mgr: Mgr,
 		let tab_copy = tab.clone();
 		let read_body = Box::new(move |shared: SharedFile, pos: u64, len: usize| {
 			if len == 0 {
-				if c == 0 {
-					//读备份文件完成，且恢复完成
+				//读备份文件完成
+				if kvs.len() == 0 {
+					//恢复完成
 					return callback_ok(count, checksum, c, digest, callback);
 				}
 
@@ -471,11 +472,16 @@ fn iter_ware_write1(r: Result<Option<(Bin, Bin)>, String>, it: Arc<RefCell<Box<I
 						count += 1;
 						let l = r.0.len() + r.1.len();
 						let mut arr = {
-							let mut bb = WriteBuffer::with_capacity(4 + l);
-							bb.write_lengthen(l as u32);
+							let mut bb = WriteBuffer::with_capacity(8 + r.0.len()+ r.1.len());
+							bb.write_lengthen(r.0.len() as u32);
 							bb.unwrap()
 						};
 						arr.extend_from_slice(r.0.as_slice());
+						{
+							let mut bb = WriteBuffer::with_capacity(4);
+							bb.write_lengthen(r.1.len() as u32);
+							arr.extend_from_slice(bb.unwrap().as_slice());
+						}
 						arr.extend_from_slice(r.1.as_slice());
 						crc.borrow_mut().write(r.0.as_slice());
 						crc.borrow_mut().write(r.1.as_slice());
