@@ -33,6 +33,7 @@ pub type TxQueryCallback = Arc<Fn(SResult<Vec<TabKV>>)>;
 
 pub type Filter = Option<Arc<Fn(Bin)-> Option<Bin>>>;
 
+#[derive(Debug)]
 pub struct TabMeta {
 	pub k: EnumType,
 	pub v: EnumType
