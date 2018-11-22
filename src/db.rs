@@ -208,6 +208,26 @@ impl ToString for TxState{
 	}
 }
 
+impl TxState {
+	//将整数转换为事务状态
+	pub fn to_state(n: usize) -> Self {
+		match n {
+            1 => TxState::Ok,
+            2 => TxState::Doing,
+            3 => TxState::Err,
+            4 => TxState::Preparing,
+            5 => TxState::PreparOk,
+            6 => TxState::PreparFail,
+            7 => TxState::Committing,
+            8 => TxState::Commited,
+            9 => TxState::CommitFail,
+            10 => TxState::Rollbacking,
+            11 => TxState::Rollbacked,
+            _ => TxState::RollbackFail,
+        }
+	}
+}
+
 /**
  * 表键值条目
  * @example
