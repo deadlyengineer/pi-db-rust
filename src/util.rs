@@ -40,13 +40,13 @@ fn get_dump_meta(file: SharedFile, mgr: Mgr, ware: Atom, tab: Atom, callback: *m
 					return callback_error(format!("restore table error, invalid dump meta, table: {}, bin: {:?}", (&ware).to_string() + "/" + &tab, bin), callback);
 				}
 
-				let vsn: u32;		//版本号
-				let time: u64;		//备份时间
+				let _vsn: u32;		//版本号
+				let _time: u64;		//备份时间
 				let count: u64;		//备份记录数
 				let checksum: u64;	//备份校验和
 				unsafe {
-					vsn = u32::from_le(*(bin[0..4].as_ptr() as *mut u32));
-					time = u64::from_le(*(bin[4..12].as_ptr() as *mut u64));
+					_vsn = u32::from_le(*(bin[0..4].as_ptr() as *mut u32));
+					_time = u64::from_le(*(bin[4..12].as_ptr() as *mut u64));
 					count = u64::from_le(*(bin[12..20].as_ptr() as *mut u64));
 					checksum = u64::from_le(*(bin[20..28].as_ptr() as *mut u64));
 				}
@@ -77,7 +77,13 @@ fn read_head(file: SharedFile, pos: u64, ware: Atom,
 					} else {
 						//头信息存在，则继续读体
 						let mut data = ReadBuffer::new(&bin[..], 0);
-						let len = data.read_lengthen();
+						let len = match data.read_lengthen() {
+							Ok(l) => l,
+							Err(e) => {
+								callback_error(e.to_string(), callback);
+								return;
+							},
+						};
 						let next_pos = pos + data.head as u64;
 						read_body(f, next_pos, len as usize);
 					}
@@ -93,8 +99,10 @@ fn check_table_meta(file: SharedFile, mgr: Mgr, ware: Atom, tab: Atom, count: u6
 	let tab_copy = tab.clone();
 	let read_body = Box::new(move |shared: SharedFile, pos: u64, len: usize| {
 		if len == 0 {
+			let callback = unsafe{Box::from_raw(callback)} ;
+			return callback(Ok(()));
 			//表元信息不存在
-			return callback_error(format!("restore table error, table meta empty, table: {}", (&ware_copy).to_string() + "/" + &tab_copy), callback);
+			//return callback_error(format!("restore table error, table meta empty, table: {}", (&ware_copy).to_string() + "/" + &tab_copy), callback);
 		}
 
 		let read = Box::new(move |f: SharedFile, result: IOResult<Vec<u8>>| {
@@ -109,7 +117,7 @@ fn check_table_meta(file: SharedFile, mgr: Mgr, ware: Atom, tab: Atom, count: u6
 						return callback_error(format!("restore table error, invalid table meta, table: {}, bin: {:?}", (&ware_copy).to_string() + "/" + &tab_copy, bin), callback);
 					}
 
-					let data = ReadBuffer::new(&bin[..], 0);
+					//let mut data = ReadBuffer::new(&bin[..], 0);
 					match mgr.tab_info(&ware_copy, &tab_copy) {
 						None => {
 							//表未初始化
@@ -118,10 +126,9 @@ fn check_table_meta(file: SharedFile, mgr: Mgr, ware: Atom, tab: Atom, count: u6
 						Some(meta) => {
 							let mut buf = WriteBuffer::new();
 							meta.encode(&mut buf);
-							let meta_buf = ReadBuffer::new(&buf.get_byte()[..], 0);
-							if data != meta_buf {
+							if &bin[0] != &buf.get_byte()[0] {
 								//元信息不匹配
-								return callback_error(format!("restore table error, table meta not match, table: {}", (&ware_copy).to_string() + "/" + &tab_copy), callback);
+								return callback_error(format!("restore table error, table meta not match, table: {}, meta: {:?}, data:{:?}", (&ware_copy).to_string() + "/" + &tab_copy, &buf.get_byte()[..], &bin ), callback);
 							}
 
 							let digest = Box::into_raw(Box::new(Digest::new_with_initial(crc64::ECMA, 0u64)));
@@ -319,8 +326,14 @@ fn callback_error(err: String, func: *mut FnBox(Result<(), String>)) {
 	}
 }
 
-/*
+/**
 * 备份指定表
+*
+* 协议--------------
+* 版本：4字节，  时间：8字节，  记录条目数量： 8字节，  crc： 8字节， 元信息长度： 动态长度（使用write_lengthen方法写入）， 元信息
+* 每记录的长度： 动态长度（使用write_lengthen方法写入）， 记录
+* 每记录的长度： 动态长度（使用write_lengthen方法写入）， 记录
+* ......
 */
 pub fn dump(mgr: &Mgr, ware: Atom, tab: Atom, file: String, callback: Arc<Fn(Result<(), String>)>) {
 let file_temp = file.clone()+ ".temp";
@@ -341,7 +354,7 @@ let file_temp = file.clone()+ ".temp";
 					let callback2 = callback1.clone();
 					let file = file.clone();
 					let file_temp1 = file_temp.clone();
-					AsyncFile::open(file_temp.clone(), AsynFileOptions::OnlyWrite(1), Box::new(move |f: IOResult<AsyncFile>|{
+					AsyncFile::open(file_temp.clone(), AsynFileOptions::ReadWrite(1), Box::new(move |f: IOResult<AsyncFile>|{
 						let f = match f {
 							Ok(v) => SharedFile::new(v),
 							Err(s) => {
@@ -357,9 +370,8 @@ let file_temp = file.clone()+ ".temp";
 							let file_temp = file_temp.clone();
 							let callback2 = callback2.clone();
 							AsyncFile::remove(file, Box::new(move |_r|{
-								{ let _drop = _f; }//释放SharedFile所有权
 								let callback2 = callback2.clone();
-								AsyncFile::rename(file_temp.clone(), file1, Box::new(move |_r1: String, _r2: String, r3: IOResult<()>|{
+								AsyncFile::rename(file_temp.clone(), file1.clone(), Box::new(move |_r1: String, _r2: String, r3: IOResult<()>|{
 									match r3 {
 										Ok(_v) => {
 											callback2(Ok(()))
@@ -385,13 +397,6 @@ let file_temp = file.clone()+ ".temp";
 				}
 			};
 
-			let mut arr = Vec::with_capacity(28);
-			arr.extend_from_slice(&(0 as u32).to_bytes());//版本
-			arr.extend_from_slice(&(0 as u64).to_bytes());////时间
-			arr.extend_from_slice(&(0 as u64).to_bytes());//记录条目数量
-			arr.extend_from_slice(&(0 as u64).to_bytes());//crc
-			f.clone().pwrite(WriteOptions::None, 0, arr, Box::new(|_f: SharedFile, _r: IOResult<usize>|{}));
-
 			let ware = ware.clone();
 			let tab = tab.clone();
 			let meta_bytes = match tr.tab_info(&ware, &tab) {
@@ -405,40 +410,48 @@ let file_temp = file.clone()+ ".temp";
 					return;
 				}
 			};
-			let meta_bytes_len = {
-				let mut bb = WriteBuffer::new();
-				bb.write_lengthen(meta_bytes.len() as u32);
+
+			let mut bytes = Vec::with_capacity(28);
+			bytes.extend_from_slice(&(0 as u32).to_bytes());//版本
+			bytes.extend_from_slice(&(0 as u64).to_bytes());////时间
+			bytes.extend_from_slice(&(0 as u64).to_bytes());//记录条目数量
+			bytes.extend_from_slice(&(0 as u64).to_bytes());//crc
+			let mut bytes = {
+				let len = bytes.len();
+				let mut bb = WriteBuffer::with_bytes(bytes, len);
+				bb.write_lengthen(meta_bytes.len() as u32); //meta 长度
 				bb.unwrap()
 			};
-			f.clone().pwrite(WriteOptions::None, 0, meta_bytes_len, Box::new(|_f: SharedFile, _r: IOResult<usize>|{}));//meta 长度
-			f.clone().pwrite(WriteOptions::None, 0, meta_bytes, Box::new(|_f: SharedFile, _r: IOResult<usize>|{}));//meta
+			bytes.extend_from_slice(&meta_bytes); //meta
 
-			let crc = Arc::new(RefCell::new(Digest::new_with_initial(crc64::ECMA, 0u64)));
-			let f1 = f.clone();
-			let iter_cb1 = iter_cb.clone();
-			let crc2 = crc.clone();
-			let it = tr.iter(&ware, &tab, None, false, None, Arc::new(move |r|{
-				match r {
-					Ok(i) => {
-						iter_ware_write(Arc::new(RefCell::new(i)), f1.clone(), crc2.clone(), 0, iter_cb1.clone());
-					},
-					Err(s) => iter_cb1(Err(s)),
-				}
-			}));
-
-			match it {
-				Some(v) => {
-					match v {
+			f.clone().pwrite(WriteOptions::None, 0, bytes, Box::new(move |_f: SharedFile, _r: IOResult<usize>|{
+				let crc = Arc::new(RefCell::new(Digest::new_with_initial(crc64::ECMA, 0u64)));
+				let f1 = f.clone();
+				let iter_cb1 = iter_cb.clone();
+				let crc2 = crc.clone();
+				let it = tr.iter(&ware, &tab, None, false, None, Arc::new(move |r|{
+					match r {
 						Ok(i) => {
-							iter_ware_write(Arc::new(RefCell::new(i)), f.clone(), crc.clone(), 0, iter_cb.clone());
+							iter_ware_write(Arc::new(RefCell::new(i)), f1.clone(), crc2.clone(), 0, iter_cb1.clone());
 						},
-						Err(s) => {
-							iter_cb(Err(s))
-						},
+						Err(s) => iter_cb1(Err(s)),
 					}
-				},
-				None => (),
-			};
+				}));
+
+				match it {
+					Some(v) => {
+						match v {
+							Ok(i) => {
+								iter_ware_write(Arc::new(RefCell::new(i)), f.clone(), crc.clone(), 0, iter_cb.clone());
+							},
+							Err(s) => {
+								iter_cb(Err(s))
+							},
+						}
+					},
+					None => (),
+				};
+			})); 
 		}
 	}));
 }
@@ -470,7 +483,6 @@ fn iter_ware_write1(r: Result<Option<(Bin, Bin)>, String>, it: Arc<RefCell<Box<I
 				match v {
 					Some(r) => {
 						count += 1;
-						let l = r.0.len() + r.1.len();
 						let mut arr = {
 							let mut bb = WriteBuffer::with_capacity(8 + r.0.len()+ r.1.len());
 							bb.write_lengthen(r.0.len() as u32);

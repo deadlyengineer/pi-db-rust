@@ -13,7 +13,7 @@ use fnv::FnvHashMap;
 use pi_lib::atom::Atom;
 use pi_lib::guid::Guid;
 use pi_lib::sinfo::EnumType;
-use pi_lib::bon::{ReadBuffer, Decode, Encode, WriteBuffer};
+use pi_lib::bon::{ReadBuffer, Decode, Encode, WriteBuffer, ReadBonErr};
 
 
 // 系统表的前缀
@@ -46,8 +46,8 @@ impl TabMeta{
 }
 
 impl Decode for TabMeta{
-	fn decode(bb: &mut ReadBuffer) -> Self{
-		TabMeta{k: EnumType::decode(bb), v: EnumType::decode(bb)}
+	fn decode(bb: &mut ReadBuffer) -> Result<Self, ReadBonErr>{
+		Ok(TabMeta{k: EnumType::decode(bb)?, v: EnumType::decode(bb)?})
 	}
 }
 
@@ -111,7 +111,7 @@ pub trait TabTxn : Txn{
 		cb: Arc<Fn(IterResult)>,
 	) -> Option<IterResult>;
 	// 表的大小
-	fn tab_size(&self, cb: TxCallback) -> DBResult;
+	fn tab_size(&self, cb: Arc<Fn(SResult<usize>)>) -> Option<SResult<usize>>;
 }
 
 // 每个Ware的元信息事务

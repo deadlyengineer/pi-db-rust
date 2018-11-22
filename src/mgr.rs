@@ -261,7 +261,7 @@ impl Tr {
 		}
 	}
 	// 表的大小
-	pub fn tab_size(&self, ware_name:&Atom, tab_name: &Atom, cb: TxCallback) -> DBResult {
+	pub fn tab_size(&self, ware_name:&Atom, tab_name: &Atom, cb: Arc<Fn(SResult<usize>)>) -> Option<SResult<usize>> {
 		let mut t = self.0.lock().unwrap();
 		match t.state {
 			TxState::Ok => t.tab_size(self, ware_name, tab_name, cb),
@@ -818,7 +818,7 @@ impl Tx {
 		}
 	}
 	// 表的大小
-	fn tab_size(&mut self, tr: &Tr, ware_name: &Atom, tab_name: &Atom, cb: TxCallback) -> DBResult {
+	fn tab_size(&mut self, tr: &Tr, ware_name: &Atom, tab_name: &Atom, cb: Arc<Fn(SResult<usize>)>) -> Option<SResult<usize>> {
 		self.state = TxState::Doing;
 		let cb1 = cb.clone();
 		let tr1 = tr.clone();
@@ -938,7 +938,7 @@ impl Tx {
 	}
 	// 处理同步返回的单个结果
 	#[inline]
-	fn single_result(&mut self, result: Option<SResult<()>>) -> DBResult {
+	fn single_result<T>(&mut self, result: Option<SResult<T>>) -> Option<SResult<T>> {
 		match result {
 			Some(r) => match r {
 				Ok(_) => {
@@ -955,7 +955,7 @@ impl Tx {
 	}
 	#[inline]
 	// 处理同步返回的错误
-	fn single_result_err(&mut self, r: SResult<()>) -> DBResult {
+	fn single_result_err<T>(&mut self, r: SResult<T>) -> Option<SResult<T>> {
 		self.state = TxState::Err;
 		Some(r)
 	}
@@ -1033,7 +1033,7 @@ fn iter_result<T>(r: SResult<T>, tr: &Tr, cb: &Arc<Fn(SResult<T>)>) {
 }
 // 处理异步返回的单个结果
 #[inline]
-fn single_result(r: SResult<()>, tr: &Tr, cb: &TxCallback) {
+fn single_result<T>(r: SResult<T>, tr: &Tr, cb: &Arc<Fn(SResult<T>)>) {
 	match r {
 		Ok(_) => if tr.cs_state(TxState::Doing, TxState::Ok) {
 			cb(r)
@@ -1045,7 +1045,7 @@ fn single_result(r: SResult<()>, tr: &Tr, cb: &TxCallback) {
 }
 // 处理异步返回的错误
 #[inline]
-fn single_result_err(r: SResult<()>, tr: &Tr, cb: &TxCallback) {
+fn single_result_err<T>(r: SResult<T>, tr: &Tr, cb: &Arc<Fn(SResult<T>)>) {
 	if tr.cs_state(TxState::Doing, TxState::Err) {
 		cb(r)
 	}
@@ -1054,7 +1054,7 @@ fn single_result_err(r: SResult<()>, tr: &Tr, cb: &TxCallback) {
 #[cfg(test)]
 use memery_db;
 #[cfg(test)]
-use pi_lib::bon::{WriteBuffer, ReadBuffer, Encode, Decode};
+use pi_lib::bon::{WriteBuffer, ReadBuffer, Encode, Decode, ReadBonErr};
 #[cfg(test)]
 use std::collections::HashMap;
 #[cfg(test)]
@@ -1077,11 +1077,11 @@ impl Encode for Player{
 
 #[cfg(test)]
 impl Decode for Player{
-	fn decode(bb: &mut ReadBuffer) -> Self{
-		Player{
-			name: String::decode(bb),
-			id: u32::decode(bb),
-		}
+	fn decode(bb: &mut ReadBuffer) -> Result<Self, ReadBonErr>{
+		Ok(Player{
+			name: String::decode(bb)?,
+			id: u32::decode(bb)?,
+		})
 	}
 }
 
