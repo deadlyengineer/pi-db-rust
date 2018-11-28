@@ -451,7 +451,7 @@ impl Iter for MemIter{
 	type Item = (Bin, Bin);
 	fn next(&mut self, _cb: Arc<Fn(NextResult<Self::Item>)>) -> Option<NextResult<Self::Item>>{
 		let mut it = unsafe{Box::from_raw(self.point as *mut <Tree<Bin, Bin> as OIter<'_>>::IterType)};
-		println!("MemIter next----------------------------------------------------------------");
+		// println!("MemIter next----------------------------------------------------------------");
 		let r = Some(Ok(match it.next() {
 			Some(&Entry(ref k, ref v)) => Some((k.clone(), v.clone())),
 			None => None,
