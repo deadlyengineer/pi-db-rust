@@ -7,11 +7,11 @@ use std::mem;
 
 use fnv::FnvHashMap;
 
-use pi_lib::ordmap::{OrdMap, Entry, ImOrdMap};
-use pi_lib::asbtree::{Tree, new};
-use pi_lib::atom::Atom;
-use pi_lib::sinfo::EnumType;
-use pi_lib::guid::{Guid, GuidGen};
+use ordmap::ordmap::{OrdMap, Entry, ImOrdMap};
+use ordmap::asbtree::{Tree, new};
+use atom::Atom;
+use sinfo::EnumType;
+use guid::{Guid, GuidGen};
 
 use db::{SResult, DBResult, IterResult, KeyIterResult, Filter, TabKV, TxCallback, TxQueryCallback, TxState, MetaTxn, TabTxn, Ware, WareSnapshot, Bin, RwLog, TabMeta};
 
@@ -1054,11 +1054,11 @@ fn single_result_err<T>(r: SResult<T>, tr: &Tr, cb: &Arc<Fn(SResult<T>)>) {
 #[cfg(test)]
 use memery_db;
 #[cfg(test)]
-use pi_lib::bon::{WriteBuffer, ReadBuffer, Encode, Decode, ReadBonErr};
+use bon::{WriteBuffer, ReadBuffer, Encode, Decode, ReadBonErr};
 #[cfg(test)]
 use std::collections::HashMap;
 #[cfg(test)]
-use pi_lib::sinfo::StructInfo;
+use sinfo::StructInfo;
 
 #[cfg(test)]
 #[derive(Debug)]

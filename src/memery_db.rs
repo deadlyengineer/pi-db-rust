@@ -5,10 +5,10 @@ use std::mem;
 
 use fnv::FnvHashMap;
 
-use pi_lib::ordmap::{OrdMap, Entry, Iter as OIter, Keys};
-use pi_lib::asbtree::{Tree};
-use pi_lib::atom::{Atom};
-use pi_lib::guid::Guid;
+use ordmap::ordmap::{OrdMap, Entry, Iter as OIter, Keys};
+use ordmap::asbtree::{Tree};
+use atom::{Atom};
+use guid::Guid;
 
 use db::{Bin, TabKV, SResult, DBResult, IterResult, KeyIterResult, NextResult, TxCallback, TxQueryCallback, Txn, TabTxn, MetaTxn, Tab, OpenTab, Ware, WareSnapshot, Filter, TxState, Iter, CommitResult, RwLog, Bon, TabMeta};
 use tabs::{TabLog, Tabs, Prepare};

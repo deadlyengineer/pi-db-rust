@@ -10,10 +10,10 @@ use std::cmp::{Ord, Eq, PartialOrd, PartialEq, Ordering};
 
 use fnv::FnvHashMap;
 
-use pi_lib::atom::Atom;
-use pi_lib::guid::Guid;
-use pi_lib::sinfo::EnumType;
-use pi_lib::bon::{ReadBuffer, Decode, Encode, WriteBuffer, ReadBonErr};
+use atom::Atom;
+use guid::Guid;
+use sinfo::EnumType;
+use bon::{ReadBuffer, Decode, Encode, WriteBuffer, ReadBonErr};
 
 
 // 系统表的前缀

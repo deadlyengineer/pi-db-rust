@@ -7,10 +7,10 @@ use std::ops::{DerefMut, Deref};
 
 use fnv::{FnvHashMap, FnvHashSet};
 
-use pi_lib::ordmap::{OrdMap, ActionResult, Keys};
-use pi_lib::asbtree::{Tree, new};
-use pi_lib::atom::Atom;
-use pi_lib::guid::Guid;
+use ordmap::ordmap::{OrdMap, ActionResult, Keys};
+use ordmap::asbtree::{Tree, new};
+use atom::Atom;
+use guid::Guid;
 
 use db::{SResult, Tab, TabTxn, OpenTab, Bin, RwLog, TabMeta};
 
@@ -177,7 +177,7 @@ pub struct TabIter<T: Clone + Tab>{
 
 impl<T: Clone + Tab> Drop for TabIter<T>{
 	fn drop(&mut self) {
-        unsafe{Box::from_raw(self.point as *mut Keys<'static, Tree<Atom, TabInfo<T>>>)};
+        unsafe{Box::from_raw(self.point as *mut Keys<Tree<Atom, TabInfo<T>>>)};
     }
 }
 
@@ -193,7 +193,7 @@ impl<'a, T: 'a + Clone + Tab> TabIter<T>{
 impl<T: Clone + Tab> Iterator for TabIter<T>{
 	type Item = Atom;
 	fn next(&mut self) -> Option<Self::Item>{
-		let mut it = unsafe{Box::from_raw(self.point as *mut Keys<'static, Tree<Atom, TabInfo<T>>>)};
+		let mut it = unsafe{Box::from_raw(self.point as *mut Keys<Tree<Atom, TabInfo<T>>>)};
 		let r = match it.next() {
 			Some(k) => Some(k.clone()),
 			None => None,
@@ -257,7 +257,8 @@ impl<T: Clone + Tab> Tabs<T> {
 	}
 	// 设置表的元信息
 	pub fn set_tab_meta(&mut self, tab: Atom, meta: Arc<TabMeta>) -> bool {
-		self.map.insert(tab, TabInfo::new(meta))
+		let r = self.map.insert(tab, TabInfo::new(meta));
+		r
 	}
 
 	// 预提交

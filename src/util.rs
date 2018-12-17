@@ -5,9 +5,9 @@ use std::cell::RefCell;
 
 use crc::crc64::{self, Digest, Hasher64};
 
-use pi_lib::bon::{Encode, ReadBuffer, WriteBuffer};
-use pi_lib::atom::Atom;
-use pi_base::file::{AsynFileOptions, WriteOptions, AsyncFile, Shared, SharedFile};
+use bon::{Encode, ReadBuffer, WriteBuffer};
+use atom::Atom;
+use file::file::{AsynFileOptions, WriteOptions, AsyncFile, Shared, SharedFile};
 
 use mgr::Mgr;
 use db::{SResult, TabKV, Iter, Bin};
@@ -349,8 +349,8 @@ let file_temp = file.clone()+ ".temp";
 			match r {
 				Ok(v) => {
 					let mut arr = Vec::with_capacity(16);
-					arr.extend_from_slice(&v.0.to_bytes());
-					arr.extend_from_slice(&v.1.to_bytes());
+					arr.extend_from_slice(&v.0.to_le_bytes());
+					arr.extend_from_slice(&v.1.to_le_bytes());
 					let callback2 = callback1.clone();
 					let file = file.clone();
 					let file_temp1 = file_temp.clone();
@@ -412,10 +412,10 @@ let file_temp = file.clone()+ ".temp";
 			};
 
 			let mut bytes = Vec::with_capacity(28);
-			bytes.extend_from_slice(&(0 as u32).to_bytes());//版本
-			bytes.extend_from_slice(&(0 as u64).to_bytes());////时间
-			bytes.extend_from_slice(&(0 as u64).to_bytes());//记录条目数量
-			bytes.extend_from_slice(&(0 as u64).to_bytes());//crc
+			bytes.extend_from_slice(&(0 as u32).to_le_bytes());//版本
+			bytes.extend_from_slice(&(0 as u64).to_le_bytes());////时间
+			bytes.extend_from_slice(&(0 as u64).to_le_bytes());//记录条目数量
+			bytes.extend_from_slice(&(0 as u64).to_le_bytes());//crc
 			let mut bytes = {
 				let len = bytes.len();
 				let mut bb = WriteBuffer::with_bytes(bytes, len);
