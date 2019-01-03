@@ -5,7 +5,7 @@ authors = ["zmythleo <zmythleo@gmail.com>"]
 
 [dependencies]
 fnv = "1.0.3"
-parking_lot = {version = "*", features = ["nightly"]}
+parking_lot = {version = "0.6.4", features = ["nightly"]}
 crc = "*"
 atom = {path = "../pi_lib/atom"}
 guid = {path = "../pi_lib/guid"}

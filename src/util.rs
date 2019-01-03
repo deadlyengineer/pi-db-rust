@@ -7,7 +7,7 @@ use crc::crc64::{self, Digest, Hasher64};
 
 use bon::{Encode, ReadBuffer, WriteBuffer};
 use atom::Atom;
-use file::file::{AsynFileOptions, WriteOptions, AsyncFile, Shared, SharedFile};
+use file::file::{AsyncFileOptions, WriteOptions, AsyncFile, Shared, SharedFile};
 
 use mgr::Mgr;
 use db::{SResult, TabKV, Iter, Bin};
@@ -27,7 +27,7 @@ pub fn restore(mgr: &Mgr, ware: Atom, tab: Atom, file: Atom, callback: Box<FnBox
 			Ok(f) => get_dump_meta(Arc::new(f), mgr_copy, ware, tab, Box::into_raw(callback)),
 		}
 	});
-	AsyncFile::open((&file).to_string(), AsynFileOptions::OnlyRead(1), open);
+	AsyncFile::open((&file).to_string(), AsyncFileOptions::OnlyRead(1), open);
 }
 
 //获取备份文件中的元信息
@@ -339,7 +339,7 @@ pub fn dump(mgr: &Mgr, ware: Atom, tab: Atom, file: String, callback: Arc<Fn(Res
 let file_temp = file.clone()+ ".temp";
 	let tr = mgr.transaction(false);
 	//先将数据写入临时表中
-	AsyncFile::open(file_temp.clone(), AsynFileOptions::OnlyAppend(1), Box::new(move |f: IOResult<AsyncFile>|{
+	AsyncFile::open(file_temp.clone(), AsyncFileOptions::OnlyAppend(1), Box::new(move |f: IOResult<AsyncFile>|{
 		//写入数据回调，r：Result<(写入条目数量, 写入条目的crc值), String>
 		let callback1 = callback.clone();
 		let file_temp = file_temp.clone();
@@ -354,7 +354,7 @@ let file_temp = file.clone()+ ".temp";
 					let callback2 = callback1.clone();
 					let file = file.clone();
 					let file_temp1 = file_temp.clone();
-					AsyncFile::open(file_temp.clone(), AsynFileOptions::ReadWrite(1), Box::new(move |f: IOResult<AsyncFile>|{
+					AsyncFile::open(file_temp.clone(), AsyncFileOptions::ReadWrite(1), Box::new(move |f: IOResult<AsyncFile>|{
 						let f = match f {
 							Ok(v) => SharedFile::new(v),
 							Err(s) => {
