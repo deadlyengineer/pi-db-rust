@@ -7,7 +7,7 @@ use std::mem;
 
 use fnv::FnvHashMap;
 
-use ordmap::ordmap::{OrdMap, Entry, ImOrdMap};
+use ordmap::ordmap::{OrdMap, Entry, ImOrdMap, Keys};
 use ordmap::asbtree::{Tree, new};
 use atom::Atom;
 use sinfo::EnumType;
@@ -54,7 +54,7 @@ impl Mgr {
 		}
 	}
 	// 创建事务
-	pub fn transaction(&self, writable: bool) -> Tr {
+	pub fn transaction(&self, writable: bool) -> Tr {		
 		let id = self.2.gen(0);
 		self.3.acount.fetch_add(1, Ordering::SeqCst);
 		let map = {
@@ -66,6 +66,20 @@ impl Mgr {
 	pub fn listen(&self, monitor: Arc<Monitor>){
 		self.0.lock().unwrap().register_monitor(monitor);
 	}
+
+	pub fn ware_name_list(&self) -> Vec<String> {
+		let mut arr = Vec::new();
+		let lock = self.1.lock().unwrap();
+		let mut iter = lock.keys(None, false);
+		loop {
+			match iter.next() {
+				Some(e) => arr.push(e.as_str().to_string()),
+				None => break,
+			}
+		}
+		arr
+	}
+
 	// 寻找指定的库
 	fn find(&self, ware_name: &Atom) -> Option<Arc<Ware>> {
 		let map = {
@@ -381,6 +395,10 @@ impl WareMap {
 			Some(b) => Some(b.clone()),
 			_ => None
 		}
+	}
+
+	fn keys(&self, key: Option<&Atom>, descending: bool) -> Keys<Tree<Atom, Arc<Ware>>> {
+		self.0.keys(key, descending)
 	}
 }
 
