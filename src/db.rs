@@ -87,6 +87,7 @@ pub trait TabTxn : Txn{
 	// 迭代
 	fn iter(
 		&self,
+		tab: &Atom,
 		key: Option<Bin>,
 		descending: bool,
 		filter: Filter,

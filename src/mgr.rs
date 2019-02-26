@@ -781,9 +781,11 @@ impl Tx {
 		});
 		let bf1 = bf.clone();
 		self.state = TxState::Doing;
+		let tab_clone1 = tab.clone();
+		let tab_clone2 = tab.clone();
 		match self.build(&ware, &tab, Box::new(move |r| {
 			match r {
-				Ok(t) => match t.iter(key1.clone(), descending, filter1.clone(), bf1.clone()) {
+				Ok(t) => match t.iter(&tab_clone1, key1.clone(), descending, filter1.clone(), bf1.clone()) {
 					Some(r) => iter_result(r, &tr2, &cb),
 					_ => ()
 				},
@@ -793,7 +795,7 @@ impl Tx {
 			}
 		})) {
 			Some(r) => match r {
-				Ok(t) => self.iter_result(t.iter(key, descending, filter, bf)),
+				Ok(t) => self.iter_result(t.iter(&tab_clone2, key, descending, filter, bf)),
 				Err(s) => {
 					self.state = TxState::Err;
 					Some(Err(s))

@@ -134,8 +134,8 @@ impl MemeryTxn {
 		let txn = MemeryTxn {
 			id: id.clone(),
 			writable: writable,
-			tab: tab,
 			root: root.clone(),
+			tab: tab,
 			old: root,
 			rwlog: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
 			state: TxState::Ok,
@@ -353,6 +353,7 @@ impl TabTxn for RefMemeryTxn {
 	// 迭代
 	fn iter(
 		&self,
+		tab: &Atom,
 		key: Option<Bin>,
 		descending: bool,
 		filter: Filter,
