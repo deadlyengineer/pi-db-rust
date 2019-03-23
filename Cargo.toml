@@ -7,6 +7,8 @@ authors = ["zmythleo <zmythleo@gmail.com>"]
 fnv = "1.0.3"
 parking_lot = {version = "0.6.4", features = ["nightly"]}
 crc = "*"
+lazy_static = "*"
+crossbeam-channel = "0.3.4"
 atom = {path = "../pi_lib/atom"}
 guid = {path = "../pi_lib/guid"}
 bon = {path = "../pi_lib/bon"}
