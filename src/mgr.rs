@@ -1,6 +1,9 @@
 /**
  * 基于2pc的db管理器，每个db实现需要将自己注册到管理器上
  */
+
+use lazy_static;
+use crossbeam_channel::{bounded, unbounded, Receiver, Sender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::mem;
@@ -14,6 +17,15 @@ use sinfo::EnumType;
 use guid::{Guid, GuidGen};
 
 use db::{SResult, DBResult, IterResult, KeyIterResult, Filter, TabKV, TxCallback, TxQueryCallback, TxState, MetaTxn, TabTxn, Ware, WareSnapshot, Bin, RwLog, TabMeta};
+
+pub struct CommitChan(pub Guid, pub TxCallback, pub Sender<Arc<Vec<TabKV>>>);
+
+unsafe impl Send for CommitChan {}
+unsafe impl Sync for CommitChan {}
+
+lazy_static! {
+	pub static ref COMMIT_CHAN: (Sender<CommitChan>, Receiver<CommitChan>) = unbounded();
+}
 
 // 表库及事务管理器
 #[derive(Clone)]
@@ -504,16 +516,49 @@ impl Tx {
 			}
 		}
 		let len = self.tab_txns.len() + alter_len;
+		// println!(" ======== pi_db::mgr::commit txid: {:?}, alter_len: {:?}, tab_txn_len: {:?}", self.id.time(), alter_len, self.tab_txns.len());
 		let count = Arc::new(AtomicUsize::new(len));
 		let c = count.clone();
 		let tr1 = tr.clone();
+		let txid = self.id.clone();
+		let writable = self.writable;
+		let monitors = self.monitors.clone();
+		let mgr = self.mgr.clone();
 		let bf = Arc::new(move |r: SResult<()> | {
 			match r {
 				Ok(_) => tr1.cs_state(TxState::Committing, TxState::Commited),
 				_ => tr1.cs_state(TxState::Committing, TxState::CommitFail)
 			};
 			if c.fetch_sub(1, Ordering::SeqCst) == 1 {
-				cb(Ok(()))
+				if writable {
+					let (s, r) = unbounded();
+					// 读写事务通过无界channel排队提交
+					match COMMIT_CHAN.0.try_send(CommitChan(txid.clone(), cb.clone(), s)) {
+						Ok(_) => {
+							// println!("COMMIT_CHAN send success, txid: {:?}", txid.time());
+						}
+						Err(TrySendError::Full(_)) => {
+							// println!("COMMIT_CHAN full");
+						}
+						Err(TrySendError::Disconnected(_)) => {
+							// println!("COMMIT_CHAN disconnected");
+						}
+					}
+
+					match r.recv() {
+						Ok(mods) => {
+							for m in mods.iter() {
+								for Entry(_, monitor) in monitors.iter(None, false){
+									monitor.notify(Event{ware: m.ware.clone(), tab: m.tab.clone(), other: EventType::Tab{key:m.key.clone(), value: m.value.clone()}}, mgr.clone())
+								}
+							}
+						}
+						Err(_) => {}
+					}
+				} else {
+					// 只读事务直接提交
+					cb(Ok(()))
+				}
 			}
 		});
 
