@@ -18,7 +18,7 @@ use guid::{Guid, GuidGen};
 
 use db::{SResult, DBResult, IterResult, KeyIterResult, Filter, TabKV, TxCallback, TxQueryCallback, TxState, MetaTxn, TabTxn, Ware, WareSnapshot, Bin, RwLog, TabMeta};
 
-pub struct CommitChan(pub Guid, pub TxCallback, pub Sender<Arc<Vec<TabKV>>>);
+pub struct CommitChan(pub Guid, pub Sender<Arc<Vec<TabKV>>>);
 
 unsafe impl Send for CommitChan {}
 unsafe impl Sync for CommitChan {}
@@ -533,27 +533,32 @@ impl Tx {
 				if writable {
 					let (s, r) = unbounded();
 					// 读写事务通过无界channel排队提交
-					match COMMIT_CHAN.0.try_send(CommitChan(txid.clone(), cb.clone(), s)) {
+					match COMMIT_CHAN.0.try_send(CommitChan(txid.clone(), s)) {
 						Ok(_) => {
 							// println!("COMMIT_CHAN send success, txid: {:?}", txid.time());
-						}
-						Err(TrySendError::Full(_)) => {
-							// println!("COMMIT_CHAN full");
-						}
-						Err(TrySendError::Disconnected(_)) => {
-							// println!("COMMIT_CHAN disconnected");
-						}
-					}
-
-					match r.recv() {
-						Ok(mods) => {
-							for m in mods.iter() {
-								for Entry(_, monitor) in monitors.iter(None, false){
-									monitor.notify(Event{ware: m.ware.clone(), tab: m.tab.clone(), other: EventType::Tab{key:m.key.clone(), value: m.value.clone()}}, mgr.clone())
+							match r.recv() {
+								Ok(mods) => {
+									// println!("commit receive channel");
+									for m in mods.iter() {
+										for Entry(_, monitor) in monitors.iter(None, false){
+											monitor.notify(Event{ware: m.ware.clone(), tab: m.tab.clone(), other: EventType::Tab{key:m.key.clone(), value: m.value.clone()}}, mgr.clone())
+										}
+									}
+									cb(Ok(()));
+								}
+								Err(_) => {
+									cb(Err("channel receive error".to_string()));
 								}
 							}
 						}
-						Err(_) => {}
+						Err(TrySendError::Full(_)) => {
+							// println!("COMMIT_CHAN full");
+							cb(Err("COMMIT_CHAN full".to_string()));
+						}
+						Err(TrySendError::Disconnected(_)) => {
+							// println!("COMMIT_CHAN disconnected");
+							cb(Err("COMMIT_CHAN disconnect".to_string()));
+						}
 					}
 				} else {
 					// 只读事务直接提交
