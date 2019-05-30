@@ -7,6 +7,8 @@ use crossbeam_channel::{bounded, unbounded, Receiver, Sender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::mem;
+use std::sync::RwLock;
+use std::collections::HashMap;
 
 use fnv::FnvHashMap;
 
@@ -16,7 +18,7 @@ use atom::Atom;
 use sinfo::EnumType;
 use guid::{Guid, GuidGen};
 
-use db::{SResult, DBResult, IterResult, KeyIterResult, Filter, TabKV, TxCallback, TxQueryCallback, TxState, MetaTxn, TabTxn, Ware, WareSnapshot, Bin, RwLog, TabMeta};
+use db::{SResult, DBResult, IterResult, KeyIterResult, Filter, TabKV, TxCallback, TxQueryCallback, TxState, MetaTxn, TabTxn, Event, EventType, Ware, WareSnapshot, Bin, RwLog, TabMeta};
 
 pub struct CommitChan(pub Guid, pub Sender<Arc<Vec<TabKV>>>);
 
@@ -99,16 +101,6 @@ impl Mgr {
 		};
 		map.find(ware_name)
 	}
-}
-
-pub struct Event {
-	pub ware: Atom,
-	pub tab: Atom,
-	pub other: EventType
-}
-pub enum EventType{
-	Meta(Option<EnumType>),
-	Tab{key: Bin, value: Option<Bin>},
 }
 
 pub trait Monitor {
@@ -580,7 +572,10 @@ impl Tx {
 								match v {
 									RwLog::Write(value) => {
 										for Entry(_, monitor) in self.monitors.iter(None, false){
-											monitor.notify(Event{ware: txn_name.0.clone(), tab: txn_name.1.clone(), other: EventType::Tab{key:k.clone(), value: value.clone()}}, self.mgr.clone())
+											monitor.notify(Event{ware: txn_name.0.clone(), tab: txn_name.1.clone(), other: EventType::Tab{key:k.clone(), value: value.clone()}}, self.mgr.clone());
+											if let Some(w) = self.ware_log_map.get(&txn_name.0) {
+												w.notify(Event{ware: txn_name.0.clone(), tab: txn_name.1.clone(), other: EventType::Tab{key:k.clone(), value: value.clone()}});
+											}
 										}
 									},
 									_ => (),

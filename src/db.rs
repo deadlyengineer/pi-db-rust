@@ -139,6 +139,18 @@ pub trait OpenTab {
 	// 打开指定的表，表必须有meta
 	fn open<'a, T: Tab>(&self, tab: &Atom, cb: Box<Fn(SResult<T>) + 'a>) -> Option<SResult<T>>;
 }
+
+pub struct Event {
+	pub ware: Atom,
+	pub tab: Atom,
+	pub other: EventType
+}
+
+pub enum EventType{
+	Meta(Option<EnumType>),
+	Tab{key: Bin, value: Option<Bin>},
+}
+
 // 库
 pub trait Ware {
 	// 拷贝全部的表
@@ -172,6 +184,8 @@ pub trait WareSnapshot {
 	fn commit(&self, id: &Guid);
 	// 回滚
 	fn rollback(&self, id: &Guid);
+	// 库修改通知
+	fn notify(&self, event: Event);
 }
 
 #[derive(Clone, Debug)]

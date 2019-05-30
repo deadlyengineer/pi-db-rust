@@ -11,7 +11,7 @@ use atom::{Atom};
 use guid::Guid;
 use apm::counter::{GLOBAL_PREF_COLLECT, PrefCounter};
 
-use db::{Bin, TabKV, SResult, DBResult, IterResult, KeyIterResult, NextResult, TxCallback, TxQueryCallback, Txn, TabTxn, MetaTxn, Tab, OpenTab, Ware, WareSnapshot, Filter, TxState, Iter, CommitResult, RwLog, Bon, TabMeta};
+use db::{Bin, TabKV, SResult, DBResult, IterResult, KeyIterResult, NextResult, TxCallback, TxQueryCallback, Txn, TabTxn, MetaTxn, Tab, OpenTab, Event, Ware, WareSnapshot, Filter, TxState, Iter, CommitResult, RwLog, Bon, TabMeta};
 use tabs::{TabLog, Tabs, Prepare};
 
 //内存库前缀
@@ -185,6 +185,8 @@ impl WareSnapshot for DBSnapshot {
 	fn rollback(&self, id: &Guid){
 		(self.0).0.write().unwrap().rollback(id)
 	}
+	// 库修改通知
+	fn notify(&self, event: Event) {}
 
 }
 
