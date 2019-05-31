@@ -519,6 +519,7 @@ impl Tx {
 		let writable = self.writable;
 		let monitors = self.monitors.clone();
 		let mgr = self.mgr.clone();
+		let ware_log_map = self.ware_log_map.clone();
 		let bf = Arc::new(move |r: SResult<()> | {
 			match r {
 				Ok(_) => tr1.cs_state(TxState::Committing, TxState::Commited),
@@ -537,6 +538,9 @@ impl Tx {
 									for m in mods.iter() {
 										for Entry(_, monitor) in monitors.iter(None, false){
 											monitor.notify(Event{ware: m.ware.clone(), tab: m.tab.clone(), other: EventType::Tab{key:m.key.clone(), value: m.value.clone()}}, mgr.clone())
+										}
+										if let Some(w) = ware_log_map.get(&m.ware.clone()) {
+											w.notify(Event{ware: m.ware.clone(), tab: m.tab.clone(), other: EventType::Tab{key:m.key.clone(), value: m.value.clone()}});
 										}
 									}
 									cb(Ok(()));
