@@ -573,9 +573,9 @@ impl Tx {
 									RwLog::Write(value) => {
 										for Entry(_, monitor) in self.monitors.iter(None, false){
 											monitor.notify(Event{ware: txn_name.0.clone(), tab: txn_name.1.clone(), other: EventType::Tab{key:k.clone(), value: value.clone()}}, self.mgr.clone());
-											if let Some(w) = self.ware_log_map.get(&txn_name.0) {
-												w.notify(Event{ware: txn_name.0.clone(), tab: txn_name.1.clone(), other: EventType::Tab{key:k.clone(), value: value.clone()}});
-											}
+										}
+										if let Some(w) = self.ware_log_map.get(&txn_name.0) {
+											w.notify(Event{ware: txn_name.0.clone(), tab: txn_name.1.clone(), other: EventType::Tab{key:k.clone(), value: value.clone()}});
 										}
 									},
 									_ => (),
