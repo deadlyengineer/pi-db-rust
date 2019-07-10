@@ -1,6 +1,5 @@
 use std::sync::Arc;
 use std::io::Result as IOResult;
-use std::boxed::FnBox;
 use std::cell::RefCell;
 
 use crc::crc64::{self, Digest, Hasher64};
@@ -18,7 +17,7 @@ const BATCH_RESTORE_LIMIT: u64 = 1000;
 /*
 * 还原指定表
 */
-pub fn restore(mgr: &Mgr, ware: Atom, tab: Atom, file: Atom, callback: Box<FnBox(Result<(), String>)>) {
+pub fn restore(mgr: &Mgr, ware: Atom, tab: Atom, file: Atom, callback: Box<FnOnce(Result<(), String>)>) {
 	let mgr_copy = mgr.clone();
 	let file_copy = file.clone();
 	let open = Box::new(move |result: IOResult<AsyncFile>| {
@@ -31,7 +30,7 @@ pub fn restore(mgr: &Mgr, ware: Atom, tab: Atom, file: Atom, callback: Box<FnBox
 }
 
 //获取备份文件中的元信息
-fn get_dump_meta(file: SharedFile, mgr: Mgr, ware: Atom, tab: Atom, callback: *mut FnBox(Result<(), String>)) {
+fn get_dump_meta(file: SharedFile, mgr: Mgr, ware: Atom, tab: Atom, callback: *mut FnOnce(Result<(), String>)) {
 	let read = Box::new(move |f: SharedFile, result: IOResult<Vec<u8>>| {
 		match result {
 			Err(e) => callback_error(format!("restore table error, get dump meta failed, table: {}, err: {:?}", (&ware).to_string() + "/" + &tab, e), callback),
@@ -59,7 +58,7 @@ fn get_dump_meta(file: SharedFile, mgr: Mgr, ware: Atom, tab: Atom, callback: *m
 
 //读头信息
 fn read_head(file: SharedFile, pos: u64, ware: Atom, 
-	tab: Atom, read_body: Box<FnBox(SharedFile, u64, usize)>, callback: *mut FnBox(Result<(), String>)) {
+	tab: Atom, read_body: Box<FnOnce(SharedFile, u64, usize)>, callback: *mut FnOnce(Result<(), String>)) {
 		let read_head = Box::new(move |f: SharedFile, result: IOResult<Vec<u8>>| {
 			match result {
 				Err(e) => {
@@ -94,7 +93,7 @@ fn read_head(file: SharedFile, pos: u64, ware: Atom,
 }
 
 //检查备份文件中表的元信息
-fn check_table_meta(file: SharedFile, mgr: Mgr, ware: Atom, tab: Atom, count: u64, checksum: u64, callback: *mut FnBox(Result<(), String>)) {
+fn check_table_meta(file: SharedFile, mgr: Mgr, ware: Atom, tab: Atom, count: u64, checksum: u64, callback: *mut FnOnce(Result<(), String>)) {
 	let ware_copy = ware.clone();
 	let tab_copy = tab.clone();
 	let read_body = Box::new(move |shared: SharedFile, pos: u64, len: usize| {
@@ -146,7 +145,7 @@ fn check_table_meta(file: SharedFile, mgr: Mgr, ware: Atom, tab: Atom, count: u6
 //读关键字
 fn read_key(file: SharedFile, pos: u64, mgr: Mgr, 
 	ware: Atom, tab: Atom, count: u64, 
-	checksum: u64, kvs: Vec<TabKV>, c: u64, digest: *mut Digest, callback: *mut FnBox(Result<(), String>)) {
+	checksum: u64, kvs: Vec<TabKV>, c: u64, digest: *mut Digest, callback: *mut FnOnce(Result<(), String>)) {
 		let ware_copy = ware.clone();
 		let tab_copy = tab.clone();
 		let read_body = Box::new(move |shared: SharedFile, pos: u64, len: usize| {
@@ -187,7 +186,7 @@ fn read_key(file: SharedFile, pos: u64, mgr: Mgr,
 //读值
 fn read_value(file: SharedFile, pos: u64, mgr: Mgr, 
 	ware: Atom, tab: Atom, count: u64, 
-	checksum: u64, key: WriteBuffer, kvs: Vec<TabKV>, c: u64, digest: *mut Digest, callback: *mut FnBox(Result<(), String>)) {
+	checksum: u64, key: WriteBuffer, kvs: Vec<TabKV>, c: u64, digest: *mut Digest, callback: *mut FnOnce(Result<(), String>)) {
 		let ware_copy = ware.clone();
 		let tab_copy = tab.clone();
 		let read_body = Box::new(move |shared: SharedFile, pos: u64, len: usize| {
@@ -237,7 +236,7 @@ fn read_value(file: SharedFile, pos: u64, mgr: Mgr,
 //恢复表
 fn restore_table(file: SharedFile, pos: u64, mgr: Mgr, 
 	ware: Atom, tab: Atom, count: u64, 
-	checksum: u64, kvs: Vec<TabKV>, c: u64, digest: *mut Digest, callback: *mut FnBox(Result<(), String>)) {
+	checksum: u64, kvs: Vec<TabKV>, c: u64, digest: *mut Digest, callback: *mut FnOnce(Result<(), String>)) {
 		let tr = mgr.transaction(true);
 		let tr_copy0 = tr.clone();
 		let modify = Arc::new(move |r: SResult<()>| {
@@ -304,7 +303,7 @@ fn checksum_kv(digest: &mut Box<Digest>, key: &Vec<u8>, value: &Vec<u8>) {
 }
 
 //正确回调
-fn callback_ok(count: u64, checksum: u64, c: u64, d: *mut Digest, func: *mut FnBox(Result<(), String>)) {
+fn callback_ok(count: u64, checksum: u64, c: u64, d: *mut Digest, func: *mut FnOnce(Result<(), String>)) {
 	unsafe {
 		let callback = Box::from_raw(func);
 		let digest = Box::from_raw(d);
@@ -319,7 +318,7 @@ fn callback_ok(count: u64, checksum: u64, c: u64, d: *mut Digest, func: *mut FnB
 }
 
 //错误回调
-fn callback_error(err: String, func: *mut FnBox(Result<(), String>)) {
+fn callback_error(err: String, func: *mut FnOnce(Result<(), String>)) {
 	unsafe {
 		let callback = Box::from_raw(func);
 		callback(Err(err));

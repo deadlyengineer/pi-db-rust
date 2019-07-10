@@ -1,4 +1,3 @@
-#![feature(fnbox)]
 #![crate_type = "rlib"]
 #![feature(asm,box_syntax,box_patterns)]
 #![feature(core_intrinsics)]
