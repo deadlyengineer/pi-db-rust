@@ -33,6 +33,9 @@ pub type TxQueryCallback = Arc<Fn(SResult<Vec<TabKV>>)>;
 
 pub type Filter = Option<Arc<Fn(Bin)-> Option<Bin>>>;
 
+/**
+* 表的元信息
+*/
 #[derive(Debug)]
 pub struct TabMeta {
 	pub k: EnumType,
@@ -244,9 +247,8 @@ impl TxState {
 }
 
 /**
- * 表键值条目
- * @example
- */
+* 表键值条目
+*/
 #[derive(Default, Clone, Debug)]
 pub struct TabKV {
 	pub ware: Atom,

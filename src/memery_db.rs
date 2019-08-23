@@ -105,11 +105,17 @@ impl Tab for MTab {
 	}
 }
 
-// 内存库
+/**
+* 内存库
+*/
 #[derive(Clone)]
 pub struct DB(Arc<RwLock<Tabs<MTab>>>);
 
 impl DB {
+	/**
+	* 构建内存库
+	* @returns 返回内存库
+	*/
 	pub fn new() -> Self {
 		MEMORY_WARE_CREATE_COUNT.sum(1);
 

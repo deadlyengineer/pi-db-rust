@@ -29,12 +29,18 @@ lazy_static! {
 	pub static ref COMMIT_CHAN: (Sender<CommitChan>, Receiver<CommitChan>) = unbounded();
 }
 
-// 表库及事务管理器
+/**
+* 表库及事务管理器
+*/
 #[derive(Clone)]
 pub struct Mgr(Arc<Mutex<Manager>>, Arc<Mutex<WareMap>>, Arc<GuidGen>, Statistics);
 
 impl Mgr {
-	// 注册管理器
+	/**
+	* 构建表库及事务管理器管理器
+	* @param gen 全局唯一id生成器
+	* @returns 返回表库及事务管理器管理器
+	*/
 	pub fn new(gen: GuidGen) -> Self {
 		Mgr(Arc::new(Mutex::new(Manager::new())), Arc::new(Mutex::new(WareMap::new())), Arc::new(gen), Statistics::new())
 	}
@@ -60,14 +66,23 @@ impl Mgr {
 	pub fn unregister(&mut self, ware_name: &Atom) -> bool {
 		self.1.lock().unwrap().unregister(ware_name)
 	}
-	// 表的元信息
+	/**
+	* 获取表的元信息
+	* @param ware_name 库名
+	* @param tab_name 表名
+	* @returns 返回表的元信息
+	*/
 	pub fn tab_info(&self, ware_name:&Atom, tab_name: &Atom) -> Option<Arc<TabMeta>> {
 		match self.find(ware_name) {
 			Some(b) => b.tab_info(tab_name),
 			_ => None
 		}
 	}
-	// 创建事务
+	/**
+	* 创建事务
+	* @param writable 是否为写事务
+	* @returns 返回事务
+	*/
 	pub fn transaction(&self, writable: bool) -> Tr {		
 		let id = self.2.gen(0);
 		self.3.acount.fetch_add(1, Ordering::SeqCst);
@@ -128,6 +143,9 @@ impl Statistics {
 	}
 }
 
+/**
+* 事务
+*/
 #[derive(Clone)]
 pub struct Tr(Arc<Mutex<Tx>>);
 
@@ -144,7 +162,11 @@ impl Tr {
 	pub fn get_state(&self) -> TxState {
 		self.0.lock().unwrap().state.clone()
 	}
-	// 预提交一个事务
+	/**
+	* 预提交一个事务
+	* @param cb 预提交回调
+	* @returns 返回预提交结果
+	*/
 	pub fn prepare(&self, cb: TxCallback) -> DBResult {
 		let mut t = self.0.lock().unwrap();
 		match t.state {
@@ -152,7 +174,11 @@ impl Tr {
 			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
 		}
 	}
-	// 提交一个事务
+	/**
+	* 提交一个事务
+	* @param cb 提交回调
+	* @returns 返回提交结果
+	*/
 	pub fn commit(&self, cb: TxCallback) -> DBResult {
 		let mut t = self.0.lock().unwrap();
 		match t.state {
@@ -160,7 +186,11 @@ impl Tr {
 			_ => Some(Err(String::from("InvalidState, expect:TxState::PreparOk, found:") + t.state.to_string().as_str())),
 		}
 	}
-	// 回滚一个事务
+	/**
+	* 回滚一个事务
+	* @param cb 回滚回调
+	* @returns 返回回滚结果
+	*/
 	pub fn rollback(&self, cb: TxCallback) -> DBResult {
 		let mut t = self.0.lock().unwrap();
 		match t.state {
@@ -177,7 +207,14 @@ impl Tr {
 			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
 		}
 	}
-	// 查询
+	/**
+	* 查询
+	* @param arr 待查询的表键值条目向量
+	* @param lock_time 查询时的锁时长
+	* @param read_lock 是否读锁
+	* @param cb 查询回调
+	* @returns 查询结果
+	*/
 	pub fn query(
 		&self,
 		arr: Vec<TabKV>,
@@ -191,7 +228,14 @@ impl Tr {
 			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
 		}
 	}
-	// 修改，插入、删除及更新
+	/**
+	* 插入、更新或删除
+	* @param arr 待修改的表键值条目向量，如果值为空表示删除，如果键存在则更新，否则插入
+	* @param lock_time 修改时的锁时长
+	* @param read_lock是否读锁
+	* @param cb 修改回调
+	* @returns 修改结果
+	*/
 	pub fn modify(&self, arr: Vec<TabKV>, lock_time: Option<usize>, read_lock: bool, cb: TxCallback) -> DBResult {
 		let mut t = self.0.lock().unwrap();
 		if !t.writable {
@@ -286,7 +330,14 @@ impl Tr {
 			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
 		}
 	}
-	// 创建、修改或删除表
+	/**
+	* 创建、修改或删除表
+	* @param ware_name 库名
+	* @param tab_name 表名
+	* @param meta 表的元信息
+	* @param cb 更新回调
+	* @returns 返回更新结果
+	*/
 	pub fn alter(&self, ware_name:&Atom, tab_name: &Atom, meta: Option<Arc<TabMeta>>, cb: TxCallback) -> DBResult {
 		let mut t = self.0.lock().unwrap();
 		if !t.writable {
