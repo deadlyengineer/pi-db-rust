@@ -143,12 +143,14 @@ pub trait OpenTab {
 	fn open<'a, T: Tab>(&self, tab: &Atom, cb: Box<Fn(SResult<T>) + 'a>) -> Option<SResult<T>>;
 }
 
+#[derive(Debug)]
 pub struct Event {
 	pub ware: Atom,
 	pub tab: Atom,
 	pub other: EventType
 }
 
+#[derive(Debug)]
 pub enum EventType{
 	Meta(Option<EnumType>),
 	Tab{key: Bin, value: Option<Bin>},
