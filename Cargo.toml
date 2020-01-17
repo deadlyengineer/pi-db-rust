@@ -18,3 +18,4 @@ file = {path = "../pi_lib/file"}
 worker = {path = "../pi_lib/worker"}
 time = {path = "../pi_lib/time"}
 apm = {path = "../pi_lib/apm"}
+handler = { path = "../pi_lib/handler" }
