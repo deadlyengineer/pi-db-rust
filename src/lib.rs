@@ -18,6 +18,7 @@ extern crate sinfo;
 extern crate ordmap;
 extern crate file;
 extern crate apm;
+extern crate handler;
 
 pub mod db;
 pub mod mgr;

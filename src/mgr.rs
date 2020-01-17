@@ -113,7 +113,7 @@ impl Mgr {
 	}
 
 	// 寻找指定的库
-	fn find(&self, ware_name: &Atom) -> Option<Arc<Ware>> {
+	pub fn find(&self, ware_name: &Atom) -> Option<Arc<Ware>> {
 		let map = {
 			self.1.lock().unwrap().clone()
 		};

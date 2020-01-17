@@ -15,6 +15,8 @@ use guid::Guid;
 use sinfo::EnumType;
 use bon::{ReadBuffer, Decode, Encode, WriteBuffer, ReadBonErr};
 
+use handler::{ GenType };
+
 
 // 系统表的前缀
 pub const PRIFIX: &str = "_$";
@@ -133,6 +135,10 @@ pub trait Tab {
 	fn new(tab: &Atom) -> Self;
 	// 创建表事务
 	fn transaction(&self, id: &Guid, writable: bool) -> Arc<TabTxn>;
+
+	fn set_param(&mut self, t: GenType) {
+		
+	}
 	
 	//fn get_prepare() -> (Atom, Bin, Option<Bin>); //取到预提交信息， （tab_name, key, value）
 }
