@@ -35,6 +35,9 @@ lazy_static! {
 #[derive(Clone)]
 pub struct Mgr(Arc<Mutex<Manager>>, Arc<Mutex<WareMap>>, Arc<GuidGen>, Statistics);
 
+unsafe impl Send for Mgr {}
+unsafe impl Sync for Mgr {}
+
 impl Mgr {
 	/**
 	* 构建表库及事务管理器管理器
