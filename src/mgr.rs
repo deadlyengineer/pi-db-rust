@@ -313,12 +313,12 @@ impl Tr {
 		None
 	}
 	// 列出指定库的所有表
-	pub fn list(&self, ware_name: &Atom) -> Option<Vec<Atom>> {
+	pub fn list(&self, ware_name: &Atom) -> Option<Vec<String>> {
 		match self.0.lock().unwrap().ware_log_map.get(ware_name) {
 			Some(ware) => {
 				let mut arr = Vec::new();
 				for e in ware.list(){
-					arr.push(e.clone())
+					arr.push(e.to_string())
 				}
 				Some(arr)
 			},
