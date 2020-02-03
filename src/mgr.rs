@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::mem;
 use std::sync::RwLock;
 use std::collections::HashMap;
+use std::fmt;
 
 use fnv::FnvHashMap;
 
@@ -37,6 +38,12 @@ pub struct Mgr(Arc<Mutex<Manager>>, Arc<Mutex<WareMap>>, Arc<GuidGen>, Statistic
 
 unsafe impl Send for Mgr {}
 unsafe impl Sync for Mgr {}
+
+impl fmt::Debug for Mgr {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "({:?}, {:?}, {:?}, {:?})", self.0, self.1, self.2, self.3)
+	}
+}
 
 impl Mgr {
 	/**
@@ -127,7 +134,7 @@ pub trait Monitor {
 
 
 // 事务统计
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Statistics {
 	acount: Arc<AtomicUsize>,
 	ok_count: Arc<AtomicUsize>,
@@ -306,12 +313,12 @@ impl Tr {
 		None
 	}
 	// 列出指定库的所有表
-	pub fn list(&self, ware_name: &Atom) -> Option<Vec<Atom>> {
+	pub fn list(&self, ware_name: &Atom) -> Option<Vec<String>> {
 		match self.0.lock().unwrap().ware_log_map.get(ware_name) {
 			Some(ware) => {
 				let mut arr = Vec::new();
 				for e in ware.list(){
-					arr.push(e.clone())
+					arr.push(e.to_string())
 				}
 				Some(arr)
 			},
@@ -384,6 +391,13 @@ struct Manager {
 	//weak_map: FnvHashMap<Guid, Weak<Mutex<Tx>>>,
 	monitors: OrdMap<Tree<usize, Arc<Monitor>>>,//监听器列表
 }
+
+impl fmt::Debug for Manager {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "monitors size: {:?}", self.monitors.size())
+	}
+}
+
 impl Manager {
 	// 注册管理器
 	fn new() -> Self {
@@ -423,6 +437,12 @@ impl Manager {
 // 库表
 #[derive(Clone)]
 struct WareMap(OrdMap<Tree<Atom, Arc<Ware>>>);
+
+impl fmt::Debug for WareMap {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "WareMap size: {:?}", self.0.size())
+	}
+}
 
 impl WareMap {
 	fn new() -> Self {
