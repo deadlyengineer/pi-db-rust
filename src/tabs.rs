@@ -296,7 +296,15 @@ impl<T: Clone + Tab> Tabs<T> {
 				// 检查数据表是否被修改， 如果没有修改，则可以直接替换根节点
 				self.map = log.map;
 			}else{
-				// 否则，重新执行一遍修改， TODO
+				// 否则，重新执行一遍修改
+				for r in log.alter_logs {
+					if r.1.is_none() {
+						self.map.delete(&Atom::from((r.0).0.as_ref()), false);
+					} else {
+						let tab_info = TabInfo::new(r.1.unwrap());
+						self.map.upsert(Atom::from((r.0).0.as_ref()), tab_info, false);
+					}
+				}
 			}
 			_ => ()
 		}
