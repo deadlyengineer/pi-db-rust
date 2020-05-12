@@ -27,6 +27,7 @@ unsafe impl Send for CommitChan {}
 unsafe impl Sync for CommitChan {}
 
 lazy_static! {
+	static ref MODS: Arc<Mutex<HashMap<u64, Vec<TabKV>>>> = Arc::new(Mutex::new(HashMap::new()));
 	pub static ref COMMIT_CHAN: (Sender<CommitChan>, Receiver<CommitChan>) = unbounded();
 }
 
@@ -601,37 +602,19 @@ impl Tx {
 			};
 			if c.fetch_sub(1, Ordering::SeqCst) == 1 {
 				if writable {
-					let (s, r) = unbounded();
-					// 读写事务通过无界channel排队提交
-					match COMMIT_CHAN.0.try_send(CommitChan(txid.clone(), s)) {
-						Ok(_) => {
-							// println!("COMMIT_CHAN send success, txid: {:?}", txid.time());
-							match r.recv() {
-								Ok(mods) => {
-									// println!("commit receive channel");
-									for m in mods.iter() {
-										for Entry(_, monitor) in monitors.iter(None, false){
-											monitor.notify(Event{ware: m.ware.clone(), tab: m.tab.clone(), other: EventType::Tab{key:m.key.clone(), value: m.value.clone()}}, mgr.clone())
-										}
-										if let Some(w) = ware_log_map.get(&m.ware.clone()) {
-											w.notify(Event{ware: m.ware.clone(), tab: m.tab.clone(), other: EventType::Tab{key:m.key.clone(), value: m.value.clone()}});
-										}
-									}
-									cb(Ok(()));
+					match  MODS.lock().unwrap().remove(&txid.time()) {
+						Some(mods) => {
+							for m in mods.iter() {
+								for Entry(_, monitor) in monitors.iter(None, false){
+									monitor.notify(Event{ware: m.ware.clone(), tab: m.tab.clone(), other: EventType::Tab{key:m.key.clone(), value: m.value.clone()}}, mgr.clone())
 								}
-								Err(_) => {
-									cb(Err("channel receive error".to_string()));
+								if let Some(w) = ware_log_map.get(&m.ware.clone()) {
+									w.notify(Event{ware: m.ware.clone(), tab: m.tab.clone(), other: EventType::Tab{key:m.key.clone(), value: m.value.clone()}});
 								}
 							}
+							cb(Ok(()));
 						}
-						Err(TrySendError::Full(_)) => {
-							// println!("COMMIT_CHAN full");
-							cb(Err("COMMIT_CHAN full".to_string()));
-						}
-						Err(TrySendError::Disconnected(_)) => {
-							// println!("COMMIT_CHAN disconnected");
-							cb(Err("COMMIT_CHAN disconnect".to_string()));
-						}
+						None => {}
 					}
 				} else {
 					// 只读事务直接提交
@@ -740,6 +723,9 @@ impl Tx {
 				_ => ()
 			}
 		}
+		// 清理缓存
+		MODS.lock().unwrap().remove(&self.id.time());
+
 		None
 	}
 	// 修改，插入、删除及更新
@@ -858,6 +844,13 @@ impl Tx {
 		if arr.len() == 0 {
 			return Some(Ok(()))
 		}
+
+		// 保存每个txid的修改
+		let data = arr.iter().cloned().collect::<Vec<TabKV>>();
+		MODS.lock().unwrap().entry(self.id.time()).and_modify(|v| {
+			v.extend(data.clone());
+		}).or_insert(data);
+
 		let map = tab_map(arr);
 		self.state = TxState::Doing;
 		let count = Arc::new(AtomicUsize::new(map.len()));

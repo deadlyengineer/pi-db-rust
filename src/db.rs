@@ -35,6 +35,11 @@ pub type TxQueryCallback = Arc<Fn(SResult<Vec<TabKV>>)>;
 
 pub type Filter = Option<Arc<Fn(Bin)-> Option<Bin>>>;
 
+pub struct TxCbWrapper(pub TxCallback);
+
+unsafe impl Send for TxCbWrapper {}
+unsafe impl Sync for TxCbWrapper {}
+
 /**
 * 表的元信息
 */
