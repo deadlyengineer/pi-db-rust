@@ -265,7 +265,7 @@ impl<T: Clone + Tab> Tabs<T> {
 	pub fn prepare(&mut self, id: &Guid, log: &mut TabLog<T>) -> SResult<()> {
 		// 先检查预提交的交易是否有冲突
 		for val in self.prepare.values() {
-			if val.meta_names.is_disjoint(&log.meta_names) {
+			if !val.meta_names.is_disjoint(&log.meta_names) {
 				return Err(String::from("meta parpare conflicting"))
 			}
 		}
