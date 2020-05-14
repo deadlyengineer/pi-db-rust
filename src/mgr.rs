@@ -10,6 +10,7 @@ use std::mem;
 use std::sync::RwLock;
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::atomic::AtomicU64;
 
 use fnv::FnvHashMap;
 
@@ -29,6 +30,13 @@ unsafe impl Sync for CommitChan {}
 lazy_static! {
 	static ref MODS: Arc<Mutex<HashMap<u64, Vec<TabKV>>>> = Arc::new(Mutex::new(HashMap::new()));
 	pub static ref COMMIT_CHAN: (Sender<CommitChan>, Receiver<CommitChan>) = unbounded();
+	pub static ref SEQ_CHAN: (Sender<u64>, Receiver<u64>) = unbounded();
+	static ref SEQ: AtomicU64 = {
+		match SEQ_CHAN.1.recv() {
+			Ok(seq) => AtomicU64::new(seq),
+			Err(e) => panic!("SEQ channel error {:?}", e)
+		}
+	};
 }
 
 /**
@@ -481,6 +489,10 @@ impl WareMap {
 	}
 }
 
+pub fn get_next_seq() -> u64 {
+	SEQ.fetch_add(1, Ordering::SeqCst)
+}
+
 
 // 子事务
 struct Tx {
@@ -604,12 +616,13 @@ impl Tx {
 				if writable {
 					match  MODS.lock().unwrap().remove(&txid.time()) {
 						Some(mods) => {
-							for m in mods.iter() {
+							for m in mods {
+								// 数据库修改通知到订阅者
 								for Entry(_, monitor) in monitors.iter(None, false){
-									monitor.notify(Event{ware: m.ware.clone(), tab: m.tab.clone(), other: EventType::Tab{key:m.key.clone(), value: m.value.clone()}}, mgr.clone())
+									monitor.notify(Event{seq: get_next_seq(), ware: m.ware.clone(), tab: m.tab.clone(), other: EventType::Tab{key:m.key.clone(), value: m.value.clone()}}, mgr.clone())
 								}
 								if let Some(w) = ware_log_map.get(&m.ware.clone()) {
-									w.notify(Event{ware: m.ware.clone(), tab: m.tab.clone(), other: EventType::Tab{key:m.key.clone(), value: m.value.clone()}});
+									w.notify(Event{seq: get_next_seq(), ware: m.ware.clone(), tab: m.tab.clone(), other: EventType::Tab{key:m.key.clone(), value: m.value.clone()}});
 								}
 							}
 							cb(Ok(()));
@@ -633,10 +646,10 @@ impl Tx {
 								match v {
 									RwLog::Write(value) => {
 										for Entry(_, monitor) in self.monitors.iter(None, false){
-											monitor.notify(Event{ware: txn_name.0.clone(), tab: txn_name.1.clone(), other: EventType::Tab{key:k.clone(), value: value.clone()}}, self.mgr.clone());
+											monitor.notify(Event{seq: get_next_seq(), ware: txn_name.0.clone(), tab: txn_name.1.clone(), other: EventType::Tab{key:k.clone(), value: value.clone()}}, self.mgr.clone());
 										}
 										if let Some(w) = self.ware_log_map.get(&txn_name.0) {
-											w.notify(Event{ware: txn_name.0.clone(), tab: txn_name.1.clone(), other: EventType::Tab{key:k.clone(), value: value.clone()}});
+											w.notify(Event{seq: get_next_seq(), ware: txn_name.0.clone(), tab: txn_name.1.clone(), other: EventType::Tab{key:k.clone(), value: value.clone()}});
 										}
 									},
 									_ => (),

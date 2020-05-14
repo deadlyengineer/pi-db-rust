@@ -156,6 +156,8 @@ pub trait OpenTab {
 
 #[derive(Debug)]
 pub struct Event {
+	// 数据库同步序列号
+	pub seq: u64,
 	pub ware: Atom,
 	pub tab: Atom,
 	pub other: EventType
