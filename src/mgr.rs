@@ -2,12 +2,12 @@
  * 基于2pc的db管理器，每个db实现需要将自己注册到管理器上
  */
 
-use lazy_static;
+
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::mem;
-use std::sync::RwLock;
+
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::atomic::AtomicU64;
@@ -20,7 +20,7 @@ use atom::Atom;
 use sinfo::EnumType;
 use guid::{Guid, GuidGen};
 
-use db::{SResult, DBResult, IterResult, KeyIterResult, Filter, TabKV, TxCallback, TxQueryCallback, TxState, MetaTxn, TabTxn, Event, EventType, Ware, WareSnapshot, Bin, RwLog, TabMeta};
+use crate::db::{SResult, DBResult, IterResult, KeyIterResult, Filter, TabKV, TxCallback, TxQueryCallback, TxState, MetaTxn, TabTxn, Event, EventType, Ware, WareSnapshot, Bin, RwLog, TabMeta};
 
 pub struct CommitChan(pub Guid, pub Sender<Arc<Vec<TabKV>>>);
 
@@ -78,7 +78,7 @@ impl Mgr {
 		Mgr(Arc::new(Mutex::new(Manager::new())), Arc::new(Mutex::new(WareMap::new())), gen, self.3.clone())
 	}
 	// 注册库
-	pub fn register(&self, ware_name: Atom, ware: Arc<Ware>) -> bool {
+	pub fn register(&self, ware_name: Atom, ware: Arc<dyn Ware>) -> bool {
 		self.1.lock().unwrap().register(ware_name, ware)
 	}
 	// 取消注册数据库
@@ -111,7 +111,7 @@ impl Mgr {
 		self.0.lock().unwrap().transaction(map, writable, id, self.clone())
 	}
 
-	pub fn listen(&self, monitor: Arc<Monitor>){
+	pub fn listen(&self, monitor: Arc<dyn Monitor>){
 		self.0.lock().unwrap().register_monitor(monitor);
 	}
 
@@ -129,7 +129,7 @@ impl Mgr {
 	}
 
 	// 寻找指定的库
-	pub fn find(&self, ware_name: &Atom) -> Option<Arc<Ware>> {
+	pub fn find(&self, ware_name: &Atom) -> Option<Arc<dyn Ware>> {
 		let map = {
 			self.1.lock().unwrap().clone()
 		};
@@ -285,7 +285,7 @@ impl Tr {
 		key: Option<Bin>,
 		descending: bool,
 		filter: Filter,
-		cb: Arc<Fn(IterResult)>,
+		cb: Arc<dyn Fn(IterResult)>,
 	) -> Option<IterResult> {
 		let mut t = self.0.lock().unwrap();
 		match t.state {
@@ -301,7 +301,7 @@ impl Tr {
 		key: Option<Bin>,
 		descending: bool,
 		filter: Filter,
-		cb: Arc<Fn(KeyIterResult)>,
+		cb: Arc<dyn Fn(KeyIterResult)>,
 	) -> Option<KeyIterResult> {
 		let mut t = self.0.lock().unwrap();
 		match t.state {
@@ -317,7 +317,7 @@ impl Tr {
 		_key: Option<Vec<u8>>,
 		_descending: bool,
 		_filter: String,
-		_cb: Arc<Fn(IterResult)>,
+		_cb: Arc<dyn Fn(IterResult)>,
 	) -> Option<IterResult> {
 		None
 	}
@@ -342,7 +342,7 @@ impl Tr {
 		}
 	}
 	// 表的大小
-	pub fn tab_size(&self, ware_name:&Atom, tab_name: &Atom, cb: Arc<Fn(SResult<usize>)>) -> Option<SResult<usize>> {
+	pub fn tab_size(&self, ware_name:&Atom, tab_name: &Atom, cb: Arc<dyn Fn(SResult<usize>)>) -> Option<SResult<usize>> {
 		let mut t = self.0.lock().unwrap();
 		match t.state {
 			TxState::Ok => t.tab_size(self, ware_name, tab_name, cb),
@@ -398,7 +398,7 @@ struct Manager {
 	// 定时轮
 	// 管理用的弱引用事务
 	//weak_map: FnvHashMap<Guid, Weak<Mutex<Tx>>>,
-	monitors: OrdMap<Tree<usize, Arc<Monitor>>>,//监听器列表
+	monitors: OrdMap<Tree<usize, Arc<dyn Monitor>>>,//监听器列表
 }
 
 impl fmt::Debug for Manager {
@@ -438,14 +438,14 @@ impl Manager {
 		tr
 	}
 
-	fn register_monitor(&mut self, monitor: Arc<Monitor>){
+	fn register_monitor(&mut self, monitor: Arc<dyn Monitor>){
 		self.monitors.insert(self.monitors.size(), monitor);
 	}
 }
 
 // 库表
 #[derive(Clone)]
-struct WareMap(OrdMap<Tree<Atom, Arc<Ware>>>);
+struct WareMap(OrdMap<Tree<Atom, Arc<dyn Ware>>>);
 
 impl fmt::Debug for WareMap {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -466,7 +466,7 @@ impl WareMap {
 		WareMap(OrdMap::new(Tree::from_order(wares)))
 	}
 	// 注册库
-	fn register(&mut self, ware_name: Atom, ware: Arc<Ware>) -> bool {
+	fn register(&mut self, ware_name: Atom, ware: Arc<dyn Ware>) -> bool {
 		self.0.insert(ware_name, ware)
 	}
 	// 取消注册的库
@@ -477,14 +477,14 @@ impl WareMap {
 		}
 	}
 	// 寻找和指定表名能前缀匹配的表库
-	fn find(&self, ware_name: &Atom) -> Option<Arc<Ware>> {
+	fn find(&self, ware_name: &Atom) -> Option<Arc<dyn Ware>> {
 		match self.0.get(&ware_name) {
 			Some(b) => Some(b.clone()),
 			_ => None
 		}
 	}
 
-	fn keys(&self, key: Option<&Atom>, descending: bool) -> Keys<Tree<Atom, Arc<Ware>>> {
+	fn keys(&self, key: Option<&Atom>, descending: bool) -> Keys<Tree<Atom, Arc<dyn Ware>>> {
 		self.0.keys(key, descending)
 	}
 }
@@ -500,12 +500,12 @@ struct Tx {
 	writable: bool,
 	timeout: usize, // 子事务的预提交的超时时间, TODO 取提交的库的最大超时时间
 	id: Guid,
-	ware_log_map: FnvHashMap<Atom, Arc<WareSnapshot>>,// 库名对应库快照
+	ware_log_map: FnvHashMap<Atom, Arc<dyn WareSnapshot>>,// 库名对应库快照
 	state: TxState,
 	_timer_ref: usize,
-	tab_txns: FnvHashMap<(Atom, Atom), Arc<TabTxn>>, //表事务表
-	meta_txns: FnvHashMap<Atom, Arc<MetaTxn>>, //元信息事务表
-	monitors: OrdMap<Tree<usize, Arc<Monitor>>>, //监听器列表
+	tab_txns: FnvHashMap<(Atom, Atom), Arc<dyn TabTxn>>, //表事务表
+	meta_txns: FnvHashMap<Atom, Arc<dyn MetaTxn>>, //元信息事务表
+	monitors: OrdMap<Tree<usize, Arc<dyn Monitor>>>, //监听器列表
 	mgr: Mgr,
 }
 
@@ -902,7 +902,7 @@ impl Tx {
 		None
 	}
 	// 迭代
-	fn iter(&mut self, tr: &Tr, ware: &Atom, tab: &Atom, key: Option<Bin>, descending: bool, filter: Filter, cb: Arc<Fn(IterResult)>) -> Option<IterResult> {
+	fn iter(&mut self, tr: &Tr, ware: &Atom, tab: &Atom, key: Option<Bin>, descending: bool, filter: Filter, cb: Arc<dyn Fn(IterResult)>) -> Option<IterResult> {
 		let tr1 = tr.clone();
 		let tr2 = tr.clone();
 		let key1 = key.clone();
@@ -937,7 +937,7 @@ impl Tx {
 		}
 	}
 	// 迭代
-	fn key_iter(&mut self, tr: &Tr, ware: &Atom, tab: &Atom, key: Option<Bin>, descending: bool, filter: Filter, cb: Arc<Fn(KeyIterResult)>) -> Option<KeyIterResult> {
+	fn key_iter(&mut self, tr: &Tr, ware: &Atom, tab: &Atom, key: Option<Bin>, descending: bool, filter: Filter, cb: Arc<dyn Fn(KeyIterResult)>) -> Option<KeyIterResult> {
 		let tr1 = tr.clone();
 		let tr2 = tr.clone();
 		let key1 = key.clone();
@@ -970,7 +970,7 @@ impl Tx {
 		}
 	}
 	// 表的大小
-	fn tab_size(&mut self, tr: &Tr, ware_name: &Atom, tab_name: &Atom, cb: Arc<Fn(SResult<usize>)>) -> Option<SResult<usize>> {
+	fn tab_size(&mut self, tr: &Tr, ware_name: &Atom, tab_name: &Atom, cb: Arc<dyn Fn(SResult<usize>)>) -> Option<SResult<usize>> {
 		self.state = TxState::Doing;
 		let cb1 = cb.clone();
 		let tr1 = tr.clone();
@@ -1029,7 +1029,7 @@ impl Tx {
 		None
 	}
 	// 创建表
-	fn build(&mut self, ware_name: &Atom, tab_name: &Atom, cb: Box<Fn(SResult<Arc<TabTxn>>)>) -> Option<SResult<Arc<TabTxn>>> {
+	fn build(&mut self, ware_name: &Atom, tab_name: &Atom, cb: Box<dyn Fn(SResult<Arc<dyn TabTxn>>)>) -> Option<SResult<Arc<dyn TabTxn>>> {
 		//let txn_key = Atom::from(String::from((*ware_name).as_str()) + "##" + tab_name.as_str());
 		let txn_key = (ware_name.clone(), tab_name.clone());
 		let txn = match self.tab_txns.get(&txn_key) {
@@ -1173,7 +1173,7 @@ fn handle_result(r: SResult<()>, tr: &Tr, count: &Arc<AtomicUsize>, cb: &TxCallb
 	}
 }
 #[inline]
-fn iter_result<T>(r: SResult<T>, tr: &Tr, cb: &Arc<Fn(SResult<T>)>) {
+fn iter_result<T>(r: SResult<T>, tr: &Tr, cb: &Arc<dyn Fn(SResult<T>)>) {
 	match r {
 		Ok(_) => if tr.cs_state(TxState::Doing, TxState::Ok) {
 			cb(r)
@@ -1185,7 +1185,7 @@ fn iter_result<T>(r: SResult<T>, tr: &Tr, cb: &Arc<Fn(SResult<T>)>) {
 }
 // 处理异步返回的单个结果
 #[inline]
-fn single_result<T>(r: SResult<T>, tr: &Tr, cb: &Arc<Fn(SResult<T>)>) {
+fn single_result<T>(r: SResult<T>, tr: &Tr, cb: &Arc<dyn Fn(SResult<T>)>) {
 	match r {
 		Ok(_) => if tr.cs_state(TxState::Doing, TxState::Ok) {
 			cb(r)
@@ -1197,14 +1197,14 @@ fn single_result<T>(r: SResult<T>, tr: &Tr, cb: &Arc<Fn(SResult<T>)>) {
 }
 // 处理异步返回的错误
 #[inline]
-fn single_result_err<T>(r: SResult<T>, tr: &Tr, cb: &Arc<Fn(SResult<T>)>) {
+fn single_result_err<T>(r: SResult<T>, tr: &Tr, cb: &Arc<dyn Fn(SResult<T>)>) {
 	if tr.cs_state(TxState::Doing, TxState::Err) {
 		cb(r)
 	}
 }
 
 #[cfg(test)]
-use memery_db;
+use crate::memery_db;
 #[cfg(test)]
 use bon::{WriteBuffer, ReadBuffer, Encode, Decode, ReadBonErr};
 #[cfg(test)]

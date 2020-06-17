@@ -12,7 +12,7 @@ use ordmap::asbtree::{Tree, new};
 use atom::Atom;
 use guid::Guid;
 
-use db::{SResult, Tab, TabTxn, OpenTab, Bin, RwLog, TabMeta};
+use crate::db::{SResult, Tab, TabTxn, OpenTab, Bin, RwLog, TabMeta};
 
 // 表结构及修改日志
 pub struct TabLog<T: Clone + Tab> {
@@ -78,7 +78,7 @@ impl<T: Clone + Tab> TabLog<T> {
 		self.meta_names.insert(tab_name.clone());
 	}
 	// 创建表事务
-	pub fn build<W: OpenTab>(&self, ware: &W, tab_name: &Atom, id: &Guid, writable: bool, cb: Box<Fn(SResult<Arc<TabTxn>>)>) -> Option<SResult<Arc<TabTxn>>> {
+	pub fn build<W: OpenTab>(&self, ware: &W, tab_name: &Atom, id: &Guid, writable: bool, cb: Box<dyn Fn(SResult<Arc<dyn TabTxn>>)>) -> Option<SResult<Arc<dyn TabTxn>>> {
 		match self.map.get(tab_name) {
 			Some(ref info) => {
 				let tab = {
@@ -89,7 +89,7 @@ impl<T: Clone + Tab> TabLog<T> {
 								let init = info.init.clone();
 								match ware.open(tab_name, Box::new(move |tab| {
 									// 异步返回，解锁后设置结果，返回等待函数数组
-									let vec:Vec<Box<Fn(SResult<T>)>> = {
+									let vec:Vec<Box<dyn Fn(SResult<T>)>> = {
 										let mut var = init.lock().unwrap();
 										let v = mem::replace(var.wait.as_mut().unwrap(), Vec::new());
 										var.tab = tab.clone();
@@ -336,12 +336,12 @@ impl<T: Clone + Tab> TabInfo<T> {
 // 表初始化
 struct TabInit<T: Clone + Tab> {
 	tab: SResult<T>,
-	wait: Option<Vec<Box<Fn(SResult<T>)>>>, // 为None表示tab已经加载
+	wait: Option<Vec<Box<dyn Fn(SResult<T>)>>>, // 为None表示tab已经加载
 }
 
 //================================ 内部静态方法
 // 表构建函数的回调函数
-fn handle_fn<T: Tab>(id: Guid, writable: bool, cb: Box<Fn(SResult<Arc<TabTxn>>)>) -> Box<Fn(SResult<T>)> {
+fn handle_fn<T: Tab>(id: Guid, writable: bool, cb: Box<dyn Fn(SResult<Arc<dyn TabTxn>>)>) -> Box<dyn Fn(SResult<T>)> {
 	Box::new(move |r| {
 		match r {
 			Ok(tab) => {

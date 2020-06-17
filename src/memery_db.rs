@@ -11,8 +11,8 @@ use atom::{Atom};
 use guid::Guid;
 use apm::counter::{GLOBAL_PREF_COLLECT, PrefCounter};
 
-use db::{Bin, TabKV, SResult, DBResult, IterResult, KeyIterResult, NextResult, TxCallback, TxQueryCallback, Txn, TabTxn, MetaTxn, Tab, OpenTab, Event, Ware, WareSnapshot, Filter, TxState, Iter, CommitResult, RwLog, Bon, TabMeta};
-use tabs::{TabLog, Tabs, Prepare};
+use crate::db::{Bin, TabKV, SResult, DBResult, IterResult, KeyIterResult, NextResult, TxCallback, TxQueryCallback, Txn, TabTxn, MetaTxn, Tab, OpenTab, Event, Ware, WareSnapshot, Filter, TxState, Iter, CommitResult, RwLog, Bon, TabMeta};
+use crate::tabs::{TabLog, Tabs, Prepare};
 
 //内存库前缀
 const MEMORY_WARE_PREFIX: &'static str = "mem_ware_";
@@ -97,7 +97,7 @@ impl Tab for MTab {
 		};
 		MTab(Arc::new(Mutex::new(tab)))
 	}
-	fn transaction(&self, id: &Guid, writable: bool) -> Arc<TabTxn> {
+	fn transaction(&self, id: &Guid, writable: bool) -> Arc<dyn TabTxn> {
 		self.0.lock().unwrap().trans_count.sum(1);
 
 		let txn = MemeryTxn::new(self.clone(), id, writable);
@@ -124,17 +124,17 @@ impl DB {
 }
 impl OpenTab for DB {
 	// 打开指定的表，表必须有meta
-	fn open<'a, T: Tab>(&self, tab: &Atom, _cb: Box<Fn(SResult<T>) + 'a>) -> Option<SResult<T>> {
+	fn open<'a, T: Tab>(&self, tab: &Atom, _cb: Box<dyn Fn(SResult<T>) + 'a>) -> Option<SResult<T>> {
 		Some(Ok(T::new(tab)))
 	}
 }
 impl Ware for DB {
 	// 拷贝全部的表
-	fn tabs_clone(&self) -> Arc<Ware> {
+	fn tabs_clone(&self) -> Arc<dyn Ware> {
 		Arc::new(DB(Arc::new(RwLock::new(self.0.read().unwrap().clone_map()))))
 	}
 	// 列出全部的表
-	fn list(&self) -> Box<Iterator<Item=Atom>> {
+	fn list(&self) -> Box<dyn Iterator<Item=Atom>> {
 		Box::new(self.0.read().unwrap().list())
 	}
 	// 获取该库对预提交后的处理超时时间, 事务会用最大超时时间来预提交
@@ -146,7 +146,7 @@ impl Ware for DB {
 		self.0.read().unwrap().get(tab_name)
 	}
 	// 获取当前表结构快照
-	fn snapshot(&self) -> Arc<WareSnapshot> {
+	fn snapshot(&self) -> Arc<dyn WareSnapshot> {
 		Arc::new(DBSnapshot(self.clone(), RefCell::new(self.0.read().unwrap().snapshot())))
 	}
 }
@@ -156,7 +156,7 @@ pub struct DBSnapshot(DB, RefCell<TabLog<MTab>>);
 
 impl WareSnapshot for DBSnapshot {
 	// 列出全部的表
-	fn list(&self) -> Box<Iterator<Item=Atom>> {
+	fn list(&self) -> Box<dyn Iterator<Item=Atom>> {
 		Box::new(self.1.borrow().list())
 	}
 	// 表的元信息
@@ -172,11 +172,11 @@ impl WareSnapshot for DBSnapshot {
 		self.1.borrow_mut().alter(tab_name, meta)
 	}
 	// 创建指定表的表事务
-	fn tab_txn(&self, tab_name: &Atom, id: &Guid, writable: bool, cb: Box<Fn(SResult<Arc<TabTxn>>)>) -> Option<SResult<Arc<TabTxn>>> {
+	fn tab_txn(&self, tab_name: &Atom, id: &Guid, writable: bool, cb: Box<dyn Fn(SResult<Arc<dyn TabTxn>>)>) -> Option<SResult<Arc<dyn TabTxn>>> {
 		self.1.borrow().build(&self.0, tab_name, id, writable, cb)
 	}
 	// 创建一个meta事务
-	fn meta_txn(&self, _id: &Guid) -> Arc<MetaTxn> {
+	fn meta_txn(&self, _id: &Guid) -> Arc<dyn MetaTxn> {
 		Arc::new(MemeryMetaTxn())
 	}
 	// 元信息的预提交
@@ -192,7 +192,7 @@ impl WareSnapshot for DBSnapshot {
 		(self.0).0.write().unwrap().rollback(id)
 	}
 	// 库修改通知
-	fn notify(&self, event: Event) {}
+	fn notify(&self, _event: Event) {}
 
 }
 
@@ -470,7 +470,7 @@ impl TabTxn for RefMemeryTxn {
 		key: Option<Bin>,
 		descending: bool,
 		filter: Filter,
-		_cb: Arc<Fn(IterResult)>,
+		_cb: Arc<dyn Fn(IterResult)>,
 	) -> Option<IterResult> {
 		let b = self.borrow_mut();
 		let key = match key {
@@ -490,7 +490,7 @@ impl TabTxn for RefMemeryTxn {
 		key: Option<Bin>,
 		descending: bool,
 		filter: Filter,
-		_cb: Arc<Fn(KeyIterResult)>,
+		_cb: Arc<dyn Fn(KeyIterResult)>,
 	) -> Option<KeyIterResult> {
 		let b = self.borrow_mut();
 		let key = match key {
@@ -512,12 +512,12 @@ impl TabTxn for RefMemeryTxn {
 		_key: Option<Bin>,
 		_descending: bool,
 		_filter: Filter,
-		_cb: Arc<Fn(IterResult)>,
+		_cb: Arc<dyn Fn(IterResult)>,
 	) -> Option<IterResult> {
 		None
 	}
 	// 表的大小
-	fn tab_size(&self, _cb: Arc<Fn(SResult<usize>)>) -> Option<SResult<usize>> {
+	fn tab_size(&self, _cb: Arc<dyn Fn(SResult<usize>)>) -> Option<SResult<usize>> {
 		let txn = self.borrow();
 		Some(Ok(txn.root.size()))
 	}
@@ -582,7 +582,7 @@ impl MemIter{
 
 impl Iter for MemIter{
 	type Item = (Bin, Bin);
-	fn next(&mut self, _cb: Arc<Fn(NextResult<Self::Item>)>) -> Option<NextResult<Self::Item>>{
+	fn next(&mut self, _cb: Arc<dyn Fn(NextResult<Self::Item>)>) -> Option<NextResult<Self::Item>>{
 		self.iter_count.sum(1);
 
 		let mut it = unsafe{Box::from_raw(self.point as *mut <Tree<Bin, Bin> as OIter<'_>>::IterType)};
@@ -632,7 +632,7 @@ impl MemKeyIter{
 
 impl Iter for MemKeyIter{
 	type Item = Bin;
-	fn next(&mut self, _cb: Arc<Fn(NextResult<Self::Item>)>) -> Option<NextResult<Self::Item>>{
+	fn next(&mut self, _cb: Arc<dyn Fn(NextResult<Self::Item>)>) -> Option<NextResult<Self::Item>>{
 		self.iter_count.sum(1);
 
 		let it = unsafe{Box::from_raw(self.point as *mut Keys<'_, Tree<Bin, Bin>>)};

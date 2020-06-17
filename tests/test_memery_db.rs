@@ -207,7 +207,7 @@ fn test_memorydb_multi_thread() {
 
 	let db_clone = Arc::into_raw(Arc::new(db.clone())) as usize;
 	// concurrently insert 3000 items with 3 threads
-	let h1 = thread::spawn(move || {
+	let _h1 = thread::spawn(move || {
 		let db1 = unsafe { Arc::from_raw(db_clone as *const pi_db::memery_db::DB) };
 		let snapshot = db1.snapshot();
 

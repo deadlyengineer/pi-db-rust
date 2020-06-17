@@ -26,14 +26,14 @@ pub type Bin = Arc<Vec<u8>>;
 pub type SResult<T> = Result<T, String>;
 pub type DBResult = Option<SResult<()>>;
 pub type CommitResult = Option<SResult<FnvHashMap<Bin, RwLog>>>;
-pub type IterResult = SResult<Box<Iter<Item = (Bin, Bin)>>>;
-pub type KeyIterResult = SResult<Box<Iter<Item = Bin>>>;
+pub type IterResult = SResult<Box<dyn Iter<Item = (Bin, Bin)>>>;
+pub type KeyIterResult = SResult<Box<dyn Iter<Item = Bin>>>;
 pub type NextResult<T> = SResult<Option<T>>;
 
-pub type TxCallback = Arc<Fn(SResult<()>)>;
-pub type TxQueryCallback = Arc<Fn(SResult<Vec<TabKV>>)>;
+pub type TxCallback = Arc<dyn Fn(SResult<()>)>;
+pub type TxQueryCallback = Arc<dyn Fn(SResult<Vec<TabKV>>)>;
 
-pub type Filter = Option<Arc<Fn(Bin)-> Option<Bin>>>;
+pub type Filter = Option<Arc<dyn Fn(Bin)-> Option<Bin>>>;
 
 pub struct TxCbWrapper(pub TxCallback);
 
@@ -101,7 +101,7 @@ pub trait TabTxn : Txn{
 		key: Option<Bin>,
 		descending: bool,
 		filter: Filter,
-		cb: Arc<Fn(IterResult)>,
+		cb: Arc<dyn Fn(IterResult)>,
 	) -> Option<IterResult>;
 	// 迭代
 	fn key_iter(
@@ -109,7 +109,7 @@ pub trait TabTxn : Txn{
 		key: Option<Bin>,
 		descending: bool,
 		filter: Filter,
-		cb: Arc<Fn(KeyIterResult)>,
+		cb: Arc<dyn Fn(KeyIterResult)>,
 	) -> Option<KeyIterResult>;
 	// 索引迭代
 	fn index(
@@ -119,10 +119,10 @@ pub trait TabTxn : Txn{
 		key: Option<Bin>,
 		descending: bool,
 		filter: Filter,
-		cb: Arc<Fn(IterResult)>,
+		cb: Arc<dyn Fn(IterResult)>,
 	) -> Option<IterResult>;
 	// 表的大小
-	fn tab_size(&self, cb: Arc<Fn(SResult<usize>)>) -> Option<SResult<usize>>;
+	fn tab_size(&self, cb: Arc<dyn Fn(SResult<usize>)>) -> Option<SResult<usize>>;
 }
 
 // 每个Ware的元信息事务
@@ -139,9 +139,9 @@ pub trait MetaTxn : Txn {
 pub trait Tab {
 	fn new(tab: &Atom) -> Self;
 	// 创建表事务
-	fn transaction(&self, id: &Guid, writable: bool) -> Arc<TabTxn>;
+	fn transaction(&self, id: &Guid, writable: bool) -> Arc<dyn TabTxn>;
 
-	fn set_param(&mut self, t: GenType) {
+	fn set_param(&mut self, _t: GenType) {
 		
 	}
 	
@@ -151,7 +151,7 @@ pub trait Tab {
 // 打开表的接口定义
 pub trait OpenTab {
 	// 打开指定的表，表必须有meta
-	fn open<'a, T: Tab>(&self, tab: &Atom, cb: Box<Fn(SResult<T>) + 'a>) -> Option<SResult<T>>;
+	fn open<'a, T: Tab>(&self, tab: &Atom, cb: Box<dyn Fn(SResult<T>) + 'a>) -> Option<SResult<T>>;
 }
 
 #[derive(Debug)]
@@ -172,20 +172,20 @@ pub enum EventType{
 // 库
 pub trait Ware {
 	// 拷贝全部的表
-	fn tabs_clone(&self) -> Arc<Ware>;
+	fn tabs_clone(&self) -> Arc<dyn Ware>;
 	// 获取该库对预提交后的处理超时时间, 事务会用最大超时时间来预提交
 	fn timeout(&self) -> usize;
 	// 列出全部的表
-	fn list(&self) -> Box<Iterator<Item=Atom>>;
+	fn list(&self) -> Box<dyn Iterator<Item=Atom>>;
 	// 表的元信息
 	fn tab_info(&self, tab_name: &Atom) -> Option<Arc<TabMeta>>;
 	// 创建当前表结构快照
-	fn snapshot(&self) -> Arc<WareSnapshot>;
+	fn snapshot(&self) -> Arc<dyn WareSnapshot>;
 }
 // 库快照
 pub trait WareSnapshot {
 	// 列出全部的表
-	fn list(&self) -> Box<Iterator<Item=Atom>>;
+	fn list(&self) -> Box<dyn Iterator<Item=Atom>>;
 	// 表的元信息
 	fn tab_info(&self, tab_name: &Atom) -> Option<Arc<TabMeta>>;
 	// 检查该表是否可以创建
@@ -193,9 +193,9 @@ pub trait WareSnapshot {
 	// 新增 修改 删除 表
 	fn alter(&self, tab_name: &Atom, meta: Option<Arc<TabMeta>>);
 	// 创建指定表的表事务
-	fn tab_txn(&self, tab_name: &Atom, id: &Guid, writable: bool, cb: Box<Fn(SResult<Arc<TabTxn>>)>) -> Option<SResult<Arc<TabTxn>>>;
+	fn tab_txn(&self, tab_name: &Atom, id: &Guid, writable: bool, cb: Box<dyn Fn(SResult<Arc<dyn TabTxn>>)>) -> Option<SResult<Arc<dyn TabTxn>>>;
 	// 创建一个meta事务
-	fn meta_txn(&self, id: &Guid) -> Arc<MetaTxn>;
+	fn meta_txn(&self, id: &Guid) -> Arc<dyn MetaTxn>;
 	// 元信息的预提交
 	fn prepare(&self, id: &Guid) -> SResult<()>;
 	// 元信息的提交
@@ -286,7 +286,7 @@ impl TabKV {
 
 pub trait Iter {
 	type Item;
-	fn next(&mut self, cb: Arc<Fn(NextResult<Self::Item>)>) -> Option<NextResult<Self::Item>>;
+	fn next(&mut self, cb: Arc<dyn Fn(NextResult<Self::Item>)>) -> Option<NextResult<Self::Item>>;
 }
 
 #[derive(Clone, Debug)]

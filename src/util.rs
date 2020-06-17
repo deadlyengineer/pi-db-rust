@@ -8,8 +8,8 @@ use bon::{Encode, ReadBuffer, WriteBuffer};
 use atom::Atom;
 use file::file::{AsyncFileOptions, WriteOptions, AsyncFile, Shared, SharedFile};
 
-use mgr::Mgr;
-use db::{SResult, TabKV, Iter, Bin};
+use crate::mgr::Mgr;
+use crate::db::{SResult, TabKV, Iter, Bin};
 
 //批量恢复限制
 const BATCH_RESTORE_LIMIT: u64 = 1000;
@@ -17,7 +17,7 @@ const BATCH_RESTORE_LIMIT: u64 = 1000;
 /*
 * 还原指定表
 */
-pub fn restore(mgr: &Mgr, ware: Atom, tab: Atom, file: Atom, callback: Box<FnOnce(Result<(), String>)>) {
+pub fn restore(mgr: &Mgr, ware: Atom, tab: Atom, file: Atom, callback: Box<dyn FnOnce(Result<(), String>)>) {
 	let mgr_copy = mgr.clone();
 	let file_copy = file.clone();
 	let open = Box::new(move |result: IOResult<AsyncFile>| {
@@ -30,7 +30,7 @@ pub fn restore(mgr: &Mgr, ware: Atom, tab: Atom, file: Atom, callback: Box<FnOnc
 }
 
 //获取备份文件中的元信息
-fn get_dump_meta(file: SharedFile, mgr: Mgr, ware: Atom, tab: Atom, callback: *mut FnOnce(Result<(), String>)) {
+fn get_dump_meta(file: SharedFile, mgr: Mgr, ware: Atom, tab: Atom, callback: *mut dyn FnOnce(Result<(), String>)) {
 	let read = Box::new(move |f: SharedFile, result: IOResult<Vec<u8>>| {
 		match result {
 			Err(e) => callback_error(format!("restore table error, get dump meta failed, table: {}, err: {:?}", (&ware).to_string() + "/" + &tab, e), callback),
@@ -58,7 +58,7 @@ fn get_dump_meta(file: SharedFile, mgr: Mgr, ware: Atom, tab: Atom, callback: *m
 
 //读头信息
 fn read_head(file: SharedFile, pos: u64, ware: Atom, 
-	tab: Atom, read_body: Box<FnOnce(SharedFile, u64, usize)>, callback: *mut FnOnce(Result<(), String>)) {
+	tab: Atom, read_body: Box<dyn FnOnce(SharedFile, u64, usize)>, callback: *mut dyn FnOnce(Result<(), String>)) {
 		let read_head = Box::new(move |f: SharedFile, result: IOResult<Vec<u8>>| {
 			match result {
 				Err(e) => {
@@ -93,7 +93,7 @@ fn read_head(file: SharedFile, pos: u64, ware: Atom,
 }
 
 //检查备份文件中表的元信息
-fn check_table_meta(file: SharedFile, mgr: Mgr, ware: Atom, tab: Atom, count: u64, checksum: u64, callback: *mut FnOnce(Result<(), String>)) {
+fn check_table_meta(file: SharedFile, mgr: Mgr, ware: Atom, tab: Atom, count: u64, checksum: u64, callback: *mut dyn FnOnce(Result<(), String>)) {
 	let ware_copy = ware.clone();
 	let tab_copy = tab.clone();
 	let read_body = Box::new(move |shared: SharedFile, pos: u64, len: usize| {
@@ -145,7 +145,7 @@ fn check_table_meta(file: SharedFile, mgr: Mgr, ware: Atom, tab: Atom, count: u6
 //读关键字
 fn read_key(file: SharedFile, pos: u64, mgr: Mgr, 
 	ware: Atom, tab: Atom, count: u64, 
-	checksum: u64, kvs: Vec<TabKV>, c: u64, digest: *mut Digest, callback: *mut FnOnce(Result<(), String>)) {
+	checksum: u64, kvs: Vec<TabKV>, c: u64, digest: *mut Digest, callback: *mut dyn FnOnce(Result<(), String>)) {
 		let ware_copy = ware.clone();
 		let tab_copy = tab.clone();
 		let read_body = Box::new(move |shared: SharedFile, pos: u64, len: usize| {
@@ -186,7 +186,7 @@ fn read_key(file: SharedFile, pos: u64, mgr: Mgr,
 //读值
 fn read_value(file: SharedFile, pos: u64, mgr: Mgr, 
 	ware: Atom, tab: Atom, count: u64, 
-	checksum: u64, key: WriteBuffer, kvs: Vec<TabKV>, c: u64, digest: *mut Digest, callback: *mut FnOnce(Result<(), String>)) {
+	checksum: u64, key: WriteBuffer, kvs: Vec<TabKV>, c: u64, digest: *mut Digest, callback: *mut dyn FnOnce(Result<(), String>)) {
 		let ware_copy = ware.clone();
 		let tab_copy = tab.clone();
 		let read_body = Box::new(move |shared: SharedFile, pos: u64, len: usize| {
@@ -236,7 +236,7 @@ fn read_value(file: SharedFile, pos: u64, mgr: Mgr,
 //恢复表
 fn restore_table(file: SharedFile, pos: u64, mgr: Mgr, 
 	ware: Atom, tab: Atom, count: u64, 
-	checksum: u64, kvs: Vec<TabKV>, c: u64, digest: *mut Digest, callback: *mut FnOnce(Result<(), String>)) {
+	checksum: u64, kvs: Vec<TabKV>, c: u64, digest: *mut Digest, callback: *mut dyn FnOnce(Result<(), String>)) {
 		let tr = mgr.transaction(true);
 		let tr_copy0 = tr.clone();
 		let modify = Arc::new(move |r: SResult<()>| {
@@ -303,7 +303,7 @@ fn checksum_kv(digest: &mut Box<Digest>, key: &Vec<u8>, value: &Vec<u8>) {
 }
 
 //正确回调
-fn callback_ok(count: u64, checksum: u64, c: u64, d: *mut Digest, func: *mut FnOnce(Result<(), String>)) {
+fn callback_ok(count: u64, checksum: u64, c: u64, d: *mut Digest, func: *mut dyn FnOnce(Result<(), String>)) {
 	unsafe {
 		let callback = Box::from_raw(func);
 		let digest = Box::from_raw(d);
@@ -318,7 +318,7 @@ fn callback_ok(count: u64, checksum: u64, c: u64, d: *mut Digest, func: *mut FnO
 }
 
 //错误回调
-fn callback_error(err: String, func: *mut FnOnce(Result<(), String>)) {
+fn callback_error(err: String, func: *mut dyn FnOnce(Result<(), String>)) {
 	unsafe {
 		let callback = Box::from_raw(func);
 		callback(Err(err));
@@ -334,7 +334,7 @@ fn callback_error(err: String, func: *mut FnOnce(Result<(), String>)) {
 * 每记录的长度： 动态长度（使用write_lengthen方法写入）， 记录
 * ......
 */
-pub fn dump(mgr: &Mgr, ware: Atom, tab: Atom, file: String, callback: Arc<Fn(Result<(), String>)>) {
+pub fn dump(mgr: &Mgr, ware: Atom, tab: Atom, file: String, callback: Arc<dyn Fn(Result<(), String>)>) {
 let file_temp = file.clone()+ ".temp";
 	let tr = mgr.transaction(false);
 	//先将数据写入临时表中
@@ -456,7 +456,7 @@ let file_temp = file.clone()+ ".temp";
 }
 
 //遍历数据库并将数据写入文件， 同时累计计算crc的值
-fn iter_ware_write(it: Arc<RefCell<Box<Iter<Item = (Bin, Bin)>>>>, f: SharedFile, crc: Arc<RefCell<Digest>>, count: u64, call_back: Arc<Fn(Result<(u64, u64), String>)>){
+fn iter_ware_write(it: Arc<RefCell<Box<dyn Iter<Item = (Bin, Bin)>>>>, f: SharedFile, crc: Arc<RefCell<Digest>>, count: u64, call_back: Arc<dyn Fn(Result<(u64, u64), String>)>){
 	let it1 = it.clone();
 	let it2 = it.clone();
 	let f1 = f.clone();
@@ -476,7 +476,7 @@ fn iter_ware_write(it: Arc<RefCell<Box<Iter<Item = (Bin, Bin)>>>>, f: SharedFile
 }
 
 //将一条数据写入文件， 同时累计计算crc的值
-fn iter_ware_write1(r: Result<Option<(Bin, Bin)>, String>, it: Arc<RefCell<Box<Iter<Item = (Bin, Bin)>>>>, f: SharedFile, crc: Arc<RefCell<Digest>>, mut count: u64, call_back: Arc<Fn(Result<(u64, u64), String>)>){
+fn iter_ware_write1(r: Result<Option<(Bin, Bin)>, String>, it: Arc<RefCell<Box<dyn Iter<Item = (Bin, Bin)>>>>, f: SharedFile, crc: Arc<RefCell<Digest>>, mut count: u64, call_back: Arc<dyn Fn(Result<(u64, u64), String>)>){
 	match r {
 			Ok(v) => {
 				match v {
