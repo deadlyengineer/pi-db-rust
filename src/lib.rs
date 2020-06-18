@@ -7,18 +7,6 @@
 
 #[macro_use]
 extern crate lazy_static;
-extern crate crossbeam_channel;
-extern crate fnv;
-extern crate crc;
-
-extern crate atom;
-extern crate guid;
-extern crate bon;
-extern crate sinfo;
-extern crate ordmap;
-extern crate file;
-extern crate apm;
-extern crate handler;
 
 pub mod db;
 pub mod mgr;
