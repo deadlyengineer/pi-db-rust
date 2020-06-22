@@ -684,3 +684,25 @@ impl Txn for MemeryMetaTxn {
 		Some(Ok(()))
 	}
 }
+
+mod tests {
+	use crate::mgr::Mgr;
+	use atom::Atom;
+	use super::*;
+	use guid::{Guid, GuidGen};
+	use r#async::rt::multi_thread::{MultiTaskPool, MultiTaskRuntime};
+
+	#[test]
+	fn it_works() {
+		let pool = MultiTaskPool::new("Store-Runtime".to_string(), 4, 1024 * 1024, 10, Some(10));
+		let rt: MultiTaskRuntime<()>  = pool.startup(true);
+		
+		let _ = rt.spawn(rt.alloc(), async move {
+			println!("helo world");
+		});
+
+		let mgr = Mgr::new(GuidGen::new(0, 0));
+		mgr.register(Atom::from("memory"), Arc::new(DB::new()));
+		let tr = mgr.transaction(true);
+	}
+}
