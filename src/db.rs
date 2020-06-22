@@ -335,3 +335,7 @@ impl Ord for Bon{
         self.partial_cmp(other).unwrap()
     }
 }
+
+pub enum BuildDbType {
+	MemoryDB,
+}
