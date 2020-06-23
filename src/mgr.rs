@@ -194,7 +194,7 @@ impl Tr {
 	pub async fn prepare(&self) -> DBResult {
 		let mut t = self.0.lock().await;
 		match t.state {
-			TxState::Ok => t.prepare(self),
+			TxState::Ok => t.prepare(self).await,
 			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
 		}
 	}
@@ -312,14 +312,13 @@ impl Tr {
 		}
 	}
 	// 索引迭代
-	pub fn index(
+	pub async fn index(
 		&self,
 		_ware: &Atom,
 		_tab: &Atom,
 		_key: Option<Vec<u8>>,
 		_descending: bool,
 		_filter: String,
-		_cb: Arc<dyn Fn(IterResult)>,
 	) -> Option<IterResult> {
 		None
 	}
@@ -379,16 +378,6 @@ impl Tr {
 			TxState::Ok => t.rename(self, ware_name, old_name, new_name, cb),
 			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
 		}
-	}
-
-	// 比较并设置状态
-	fn cs_state(&self, old: TxState, new: TxState) -> bool {
-		let mut t = self.0.lock().unwrap();
-		if t.state.clone() as usize == old as usize {
-			t.state = new;
-			return true;
-		}
-		return false;
 	}
 }
 
@@ -511,7 +500,7 @@ struct Tx {
 
 impl Tx {
 	// 预提交事务
-	fn prepare(&mut self, tr: &Tr) -> DBResult {
+	async fn prepare(&mut self, tr: &Tr) -> DBResult {
 		//如果预提交内容为空，直接返回预提交成功
 		if self.meta_txns.len() == 0 && self.tab_txns.len() == 0 {
 			self.state = TxState::PreparOk;
@@ -830,10 +819,7 @@ impl Tx {
 		let txn = self.meta_txns.entry(ware_name.clone()).or_insert_with(|| {
 			ware.meta_txn(&id)
 		}).clone();
-		let tr1 = tr.clone();
-		let bf = Arc::new(move |r| {
-			single_result(r, &tr1, &cb)
-		});
+		
 		self.single_result(txn.alter(tab_name, meta))
 	}
 	// 表改名
@@ -956,63 +942,4 @@ async fn merge_result(rvec: &Arc<Mutex<(usize, Vec<TabKV>)>>, vec: Vec<TabKV>) -
 		return Some(Ok(mem::replace(&mut t.1, Vec::new())));
 	}
 	return None
-}
-// 处理异步返回的查询结果
-#[inline]
-async fn query_result(r: SResult<Vec<TabKV>>, tr: &Tr, rvec: &Arc<Mutex<(usize, Vec<TabKV>)>>, cb: &TxQueryCallback) {
-	match r {
-		Ok(vec) => {
-			match merge_result(rvec, vec).await {
-				Some(rr) => if tr.cs_state(TxState::Doing, TxState::Ok) {
-					cb(rr)
-				}
-				_ => (),
-			}
-		},
-		_ => if tr.cs_state(TxState::Doing, TxState::Err) {
-			cb(r)
-		}
-	}
-}
-// 处理异步返回的数量结果
-#[inline]
-fn handle_result(r: SResult<()>, tr: &Tr, count: &Arc<AtomicUsize>, cb: &TxCallback) {
-	match r {
-		Ok(_) => if count.fetch_sub(1, Ordering::SeqCst) == 1 && tr.cs_state(TxState::Doing, TxState::Ok) {
-			cb(Ok(()))
-		},
-		_ => if tr.cs_state(TxState::Doing, TxState::Err) {
-			cb(r)
-		}
-	}
-}
-#[inline]
-fn iter_result<T>(r: SResult<T>, tr: &Tr, cb: &Arc<dyn Fn(SResult<T>)>) {
-	match r {
-		Ok(_) => if tr.cs_state(TxState::Doing, TxState::Ok) {
-			cb(r)
-		},
-		_ => if tr.cs_state(TxState::Doing, TxState::Err) {
-			cb(r)
-		}
-	}
-}
-// 处理异步返回的单个结果
-#[inline]
-fn single_result<T>(r: SResult<T>, tr: &Tr, cb: &Arc<dyn Fn(SResult<T>)>) {
-	match r {
-		Ok(_) => if tr.cs_state(TxState::Doing, TxState::Ok) {
-			cb(r)
-		},
-		_ => if tr.cs_state(TxState::Doing, TxState::Err) {
-			cb(r)
-		}
-	}
-}
-// 处理异步返回的错误
-#[inline]
-fn single_result_err<T>(r: SResult<T>, tr: &Tr, cb: &Arc<dyn Fn(SResult<T>)>) {
-	if tr.cs_state(TxState::Doing, TxState::Err) {
-		cb(r)
-	}
 }
