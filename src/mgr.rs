@@ -20,8 +20,9 @@ use atom::Atom;
 use sinfo::EnumType;
 use guid::{Guid, GuidGen};
 
-use crate::db::{SResult, DBResult, IterResult, KeyIterResult, Filter, TabKV, TxCallback, TxQueryCallback, TxState, MetaTxn, TabTxn, Event, EventType, Ware, WareSnapshot, Bin, RwLog, TabMeta};
+use crate::db::{SResult, DBResult, IterResult, KeyIterResult, Filter, TabKV, TxCallback, TxQueryCallback, TxState, MetaTxn, TabTxn, Event, EventType, Ware, WareSnapshot, Bin, RwLog, TabMeta, CommitResult};
 use r#async::lock::mutex_lock::Mutex;
+use crate::memery_db::{DBSnapshot, DB, RefMemeryTxn, MemeryMetaTxn};
 
 pub struct CommitChan(pub Guid, pub Sender<Arc<Vec<TabKV>>>);
 
@@ -60,7 +61,7 @@ impl Mgr {
 	// 浅拷贝，库表不同，共用同一个统计信息和GuidGen
 	pub async fn shallow_clone(&self) -> Self {
 		// TODO 拷库表
-		Mgr(Arc::new(Mutex::new(self.0.lock().await.wares_clone())), self.1.clone(), self.2.clone())
+		Mgr(Arc::new(Mutex::new(self.0.lock().await.wares_clone().await)), self.1.clone(), self.2.clone())
 	}
 	// 深拷贝，库表及统计信息不同
 	pub fn deep_clone(&self, clone_guid_gen: bool) -> Self {
@@ -72,7 +73,7 @@ impl Mgr {
 		Mgr(Arc::new(Mutex::new(WareMap::new())), gen, self.2.clone())
 	}
 	// 注册库
-	pub async fn register(&self, ware_name: Atom, ware: Arc<dyn Ware>) -> bool {
+	pub async fn register(&self, ware_name: Atom, ware: Arc<DatabaseWare>) -> bool {
 		self.0.lock().await.register(ware_name, ware)
 	}
 	// 取消注册数据库
@@ -87,7 +88,7 @@ impl Mgr {
 	*/
 	pub async fn tab_info(&self, ware_name:&Atom, tab_name: &Atom) -> Option<Arc<TabMeta>> {
 		match self.find(ware_name).await {
-			Some(b) => b.tab_info(tab_name),
+			Some(b) => b.tab_info(tab_name).await,
 			_ => None
 		}
 	}
@@ -105,7 +106,7 @@ impl Mgr {
 
 		let mut map = FnvHashMap::with_capacity_and_hasher(ware_map.0.size() * 3 / 2, Default::default());
 		for Entry(k, v) in ware_map.0.iter(None, false){
-			map.insert(k.clone(), v.snapshot());
+			map.insert(k.clone(), v.snapshot().await);
 		}
 		Tr(Arc::new(Mutex::new(Tx {
 			writable,
@@ -116,7 +117,6 @@ impl Mgr {
 			_timer_ref: 0,
 			tab_txns: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
 			meta_txns: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
-			mgr:self.clone(),
 		})))
 	}
 
@@ -134,7 +134,7 @@ impl Mgr {
 	}
 
 	// 寻找指定的库
-	pub async fn find(&self, ware_name: &Atom) -> Option<Arc<dyn Ware>> {
+	pub async fn find(&self, ware_name: &Atom) -> Option<Arc<DatabaseWare>> {
 		let map = {
 			self.0.lock().await.clone()
 		};
@@ -194,7 +194,7 @@ impl Tr {
 	pub async fn prepare(&self) -> DBResult {
 		let mut t = self.0.lock().await;
 		match t.state {
-			TxState::Ok => t.prepare(self).await,
+			TxState::Ok => t.prepare().await,
 			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
 		}
 	}
@@ -206,7 +206,7 @@ impl Tr {
 	pub async fn commit(&self) -> DBResult {
 		let mut t = self.0.lock().await;
 		match t.state {
-			TxState::PreparOk => t.commit(self).await,
+			TxState::PreparOk => t.commit().await,
 			_ => Some(Err(String::from("InvalidState, expect:TxState::PreparOk, found:") + t.state.to_string().as_str())),
 		}
 	}
@@ -220,7 +220,7 @@ impl Tr {
 		match t.state {
 			TxState::Committing|TxState::Commited|TxState::CommitFail|TxState::Rollbacking|TxState::Rollbacked|TxState::RollbackFail =>
 				return Some(Err(String::from("InvalidState, expect:TxState::Committing | TxState::Commited| TxState::CommitFail| TxState::Rollbacking| TxState::Rollbacked| TxState::RollbackFail, found:") + t.state.to_string().as_str())),
-			_ => t.rollback(self).await
+			_ => t.rollback().await
 		}
 	}
 	// 锁
@@ -247,7 +247,7 @@ impl Tr {
 	) -> Option<SResult<Vec<TabKV>>> {
 		let mut t = self.0.lock().await;
 		match t.state {
-			TxState::Ok => t.query(self, arr, lock_time, read_lock).await,
+			TxState::Ok => t.query(arr, lock_time, read_lock).await,
 			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
 		}
 	}
@@ -265,7 +265,7 @@ impl Tr {
 			return Some(Err(String::from("Readonly")))
 		}
 		match t.state {
-			TxState::Ok => t.modify(self, arr, lock_time, read_lock).await,
+			TxState::Ok => t.modify(arr, lock_time, read_lock).await,
 			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
 		}
 	}
@@ -292,7 +292,7 @@ impl Tr {
 	) -> Option<IterResult> {
 		let mut t = self.0.lock().await;
 		match t.state {
-			TxState::Ok => t.iter(self, ware, tab, key, descending, filter).await,
+			TxState::Ok => t.iter(ware, tab, key, descending, filter).await,
 			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
 		}
 	}
@@ -307,7 +307,7 @@ impl Tr {
 	) -> Option<KeyIterResult> {
 		let mut t = self.0.lock().await;
 		match t.state {
-			TxState::Ok => t.key_iter(self, ware, tab, key, descending, filter).await,
+			TxState::Ok => t.key_iter(ware, tab, key, descending, filter).await,
 			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
 		}
 	}
@@ -346,7 +346,7 @@ impl Tr {
 	pub async fn tab_size(&self, ware_name:&Atom, tab_name: &Atom) -> Option<SResult<usize>> {
 		let mut t = self.0.lock().await;
 		match t.state {
-			TxState::Ok => t.tab_size(self, ware_name, tab_name).await,
+			TxState::Ok => t.tab_size(ware_name, tab_name).await,
 			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
 		}
 	}
@@ -364,7 +364,7 @@ impl Tr {
 			return Some(Err(String::from("Readonly")))
 		}
 		match t.state {
-			TxState::Ok => t.alter(self, ware_name, tab_name, meta).await,
+			TxState::Ok => t.alter(ware_name, tab_name, meta).await,
 			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
 		}
 	}
@@ -375,7 +375,7 @@ impl Tr {
 			return Some(Err(String::from("Readonly")))
 		}
 		match t.state {
-			TxState::Ok => t.rename(self, ware_name, old_name, new_name, cb),
+			TxState::Ok => t.rename(ware_name, old_name, new_name, cb),
 			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
 		}
 	}
@@ -384,62 +384,341 @@ impl Tr {
 //================================ 内部结构和方法
 const TIMEOUT: usize = 100;
 
-// 事务管理器
-struct Manager {
-	// 定时轮
-	// 管理用的弱引用事务
-	//weak_map: FnvHashMap<Guid, Weak<Mutex<Tx>>>,
-	monitors: OrdMap<Tree<usize, Arc<dyn Monitor>>>,//监听器列表
-}
-
-impl fmt::Debug for Manager {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "monitors size: {:?}", self.monitors.size())
-	}
-}
-
-impl Manager {
-	// 注册管理器
-	fn new() -> Self {
-		Manager {
-			//weak_map: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
-			monitors: OrdMap::new(Tree::new())
-		}
-	}
-	// 创建事务
-	fn transaction(&mut self, ware_map: WareMap, writable: bool, id: Guid, mgr: Mgr) -> Tr {
-		// 遍历ware_map, 将每个Ware的快照TabLog记录下来
-		let mut map = FnvHashMap::with_capacity_and_hasher(ware_map.0.size() * 3 / 2, Default::default());
-		for Entry(k, v) in ware_map.0.iter(None, false){
-			map.insert(k.clone(), v.snapshot());
-		}
-		let tr = Tr(Arc::new(Mutex::new(Tx {
-			writable: writable,
-			timeout: TIMEOUT,
-			id: id.clone(),
-			ware_log_map: map,
-			state: TxState::Ok,
-			_timer_ref: 0,
-			tab_txns: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
-			meta_txns: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
-			mgr:mgr,
-		})));
-		//self.weak_map.insert(id, Arc::downgrade(&(tr.0)));
-		tr
-	}
-
-	fn register_monitor(&mut self, monitor: Arc<dyn Monitor>){
-		self.monitors.insert(self.monitors.size(), monitor);
-	}
-}
-
 // 库表
 #[derive(Clone)]
-struct WareMap(OrdMap<Tree<Atom, Arc<dyn Ware>>>);
+struct WareMap(OrdMap<Tree<Atom, Arc<DatabaseWare>>>);
 
 impl fmt::Debug for WareMap {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		write!(f, "WareMap size: {:?}", self.0.size())
+	}
+}
+
+enum DatabaseWareSnapshot {
+	MemSnapshot(Arc<DBSnapshot>)
+}
+
+impl DatabaseWareSnapshot {
+	pub fn new_memware_snapshot(snapshot: DBSnapshot) -> DatabaseWareSnapshot {
+		DatabaseWareSnapshot::MemSnapshot(Arc::new(snapshot))
+	}
+
+	pub fn list(&self) -> Box<dyn Iterator<Item=Atom>> {
+		match self {
+			DatabaseWareSnapshot::MemSnapshot(shot) => {
+				shot.list()
+			}
+		}
+	}
+
+	pub fn tab_info(&self, tab_name: &Atom) -> Option<Arc<TabMeta>> {
+		match self {
+			DatabaseWareSnapshot::MemSnapshot(shot) => {
+				shot.tab_info(tab_name)
+			}
+		}
+	}
+
+	pub fn check(&self, tab: &Atom, meta: &Option<Arc<TabMeta>>) -> SResult<()> {
+		match self {
+			DatabaseWareSnapshot::MemSnapshot(shot) => {
+				shot.check(tab, meta)
+			}
+		}
+	}
+
+	pub fn alter(&self, tab_name: &Atom, meta: Option<Arc<TabMeta>>) {
+		match self {
+			DatabaseWareSnapshot::MemSnapshot(shot) => {
+				shot.alter(tab_name, meta)
+			}
+		}
+	}
+
+	pub async fn tab_txn(&self, tab_name: &Atom, id: &Guid, writable: bool) -> Option<SResult<Arc<DatabaseTabTxn>>> {
+		match self {
+			DatabaseWareSnapshot::MemSnapshot(shot) => {
+				let txn = shot.tab_txn(tab_name, id, writable).await;
+				match txn {
+					Some(Ok(t)) => {
+						Some(Ok(Arc::new(DatabaseTabTxn::MemTabTxn(t))))
+					}
+					_ => Some(Err("create tab txn failed".to_string()))
+				}
+				
+			}
+		}
+	}
+
+	pub fn meta_txn(&self, id: &Guid) -> Arc<DatabaseMetaTxn> {
+		match self {
+			DatabaseWareSnapshot::MemSnapshot(shot) => {
+				Arc::new(DatabaseMetaTxn::MemMetaTxn(shot.meta_txn(id)))
+			}
+		}
+	}
+
+	pub async fn prepare(&self, id: &Guid) -> SResult<()> {
+		match self {
+			DatabaseWareSnapshot::MemSnapshot(shot) => {
+				shot.prepare(id).await
+			}
+		}
+	}
+
+	pub async fn commit(&self, id: &Guid) {
+		match self {
+			DatabaseWareSnapshot::MemSnapshot(shot) => {
+				shot.commit(id).await
+			}
+		}
+	}
+
+	pub async fn rollback(&self, id: &Guid) {
+		match self {
+			DatabaseWareSnapshot::MemSnapshot(shot) => {
+				shot.rollback(id).await
+			}
+		}
+	}
+
+	pub fn notify(&self, _event: Event) {}
+}
+
+
+pub enum DatabaseWare {
+	MemWare(Arc<DB>)
+}
+
+impl DatabaseWare {
+	pub fn new_memware(db: DB) -> DatabaseWare {
+		DatabaseWare::MemWare(Arc::new(db))
+	}
+	async fn tabs_clone(&self) -> Arc<DatabaseWare> {
+		match self {
+			DatabaseWare::MemWare(memdb) => {
+				let cloned = memdb.tabs_clone().await;
+				Arc::new(DatabaseWare::MemWare(cloned))
+			}
+		}
+	}
+
+	async fn snapshot(&self) -> Arc<DatabaseWareSnapshot> {
+		match self {
+			DatabaseWare::MemWare(memdb) => {
+				let shot = memdb.snapshot().await;
+				Arc::new(DatabaseWareSnapshot::MemSnapshot(shot))
+			}
+		}
+	}
+
+	async fn tab_info(&self, tab_name: &Atom) -> Option<Arc<TabMeta>> {
+		match self {
+			DatabaseWare::MemWare(memdb) => {
+				memdb.tab_info(tab_name).await
+			}
+		}
+	}
+
+	async fn list(&self) -> Box<dyn Iterator<Item=Atom>> {
+		match self {
+			DatabaseWare::MemWare(memdb) => {
+				memdb.list().await
+			}
+		}
+	}
+
+	fn timeout(&self) -> usize {
+		match self {
+			DatabaseWare::MemWare(memdb) => {
+				memdb.timeout()
+			}
+		}
+	}
+}
+
+enum DatabaseTabTxn {
+	MemTabTxn(Arc<RefMemeryTxn>)
+}
+
+impl DatabaseTabTxn {
+	fn new_mem_tab_txn(txn: RefMemeryTxn) -> DatabaseTabTxn {
+		DatabaseTabTxn::MemTabTxn(Arc::new(txn))
+	}
+
+	fn get_state(&self) -> TxState {
+		match self {
+			DatabaseTabTxn::MemTabTxn(txn) => {
+				txn.get_state()
+			}
+		}
+	}
+
+	pub async fn prepare(&self, timeout: usize) -> DBResult {
+		match self {
+			DatabaseTabTxn::MemTabTxn(txn) => {
+				txn.prepare(timeout).await
+			}
+		}
+	}
+
+	pub async fn commit(&self) -> CommitResult {
+		match self {
+			DatabaseTabTxn::MemTabTxn(txn) => {
+				txn.commit().await
+			}
+		}
+	}
+
+	pub async fn rollback(&self) -> DBResult {
+		match self {
+			DatabaseTabTxn::MemTabTxn(txn) => {
+				txn.rollback().await
+			}
+		}
+	}
+
+	pub async fn key_lock(&self, _arr: Arc<Vec<TabKV>>, _lock_time: usize, _readonly: bool) -> DBResult {
+		match self {
+			DatabaseTabTxn::MemTabTxn(txn) => {
+				txn.key_lock(_arr, _lock_time, _readonly).await
+			}
+		}
+	}
+
+	pub async fn query(
+		&self,
+		arr: Arc<Vec<TabKV>>,
+		_lock_time: Option<usize>,
+		_readonly: bool
+	) -> Option<SResult<Vec<TabKV>>> {
+		match self {
+			DatabaseTabTxn::MemTabTxn(txn) => {
+				txn.query(arr, _lock_time, _readonly).await
+			}
+		}
+	}
+
+	pub async fn modify(&self, arr: Arc<Vec<TabKV>>, _lock_time: Option<usize>, _readonly: bool) -> DBResult {
+		match self {
+			DatabaseTabTxn::MemTabTxn(txn) => {
+				txn.modify(arr, _lock_time, _readonly).await
+			}
+		}
+	}
+
+	// 迭代
+	pub async fn iter(
+		&self,
+		tab: &Atom,
+		key: Option<Bin>,
+		descending: bool,
+		filter: Filter
+	) -> Option<IterResult> {
+		match self {
+			DatabaseTabTxn::MemTabTxn(txn) => {
+				txn.iter(tab, key, descending, filter).await
+			}
+		}
+	}
+
+	pub async fn key_iter(
+		&self,
+		key: Option<Bin>,
+		descending: bool,
+		filter: Filter
+	) -> Option<KeyIterResult> {
+		match self {
+			DatabaseTabTxn::MemTabTxn(txn) => {
+				txn.key_iter(key, descending, filter).await
+			}
+		}
+	}
+
+	pub fn index(
+		&self,
+		_tab: &Atom,
+		_index_key: &Atom,
+		_key: Option<Bin>,
+		_descending: bool,
+		_filter: Filter,
+	) -> Option<IterResult> {
+		match self {
+			DatabaseTabTxn::MemTabTxn(txn) => {
+				txn.index(_tab, _index_key, _key, _descending, _filter)
+			}
+		}
+	}
+
+	pub async fn tab_size(&self) -> Option<SResult<usize>> {
+		match self {
+			DatabaseTabTxn::MemTabTxn(txn) => {
+				txn.tab_size().await
+			}
+		}
+	}
+}
+
+enum DatabaseMetaTxn {
+	MemMetaTxn(Arc<MemeryMetaTxn>)
+}
+
+impl DatabaseMetaTxn {
+	fn new_mem_meta_txn(txn: MemeryMetaTxn) -> DatabaseMetaTxn {
+		DatabaseMetaTxn::MemMetaTxn(Arc::new(txn))
+	}
+
+	async fn alter(&self, _tab: &Atom, _meta: Option<Arc<TabMeta>>) -> DBResult {
+		match self {
+			DatabaseMetaTxn::MemMetaTxn(txn) => {
+				txn.alter(_tab, _meta).await
+			}
+		}
+	}
+
+	async fn snapshot(&self, _tab: &Atom, _from: &Atom) -> DBResult {
+		match self {
+			DatabaseMetaTxn::MemMetaTxn(txn) => {
+				txn.snapshot(_tab, _from).await
+			}
+		}
+	}
+
+	async fn rename(&self, _tab: &Atom, _new_name: &Atom) -> DBResult {
+		match self {
+			DatabaseMetaTxn::MemMetaTxn(txn) => {
+				txn.rename(_tab, _new_name).await
+			}
+		}
+	}
+
+	fn get_state(&self) -> TxState {
+		TxState::Ok
+	}
+
+	async fn prepare(&self, _timeout: usize) -> DBResult {
+		match self {
+			DatabaseMetaTxn::MemMetaTxn(txn) => {
+				txn.prepare(_timeout).await
+			}
+		}
+	}
+
+	async fn commit(&self) -> CommitResult {
+		match self {
+			DatabaseMetaTxn::MemMetaTxn(txn) => {
+				txn.commit().await
+			}
+		}
+
+	}
+
+	async fn rollback(&self) -> DBResult {
+		match self {
+			DatabaseMetaTxn::MemMetaTxn(txn) => {
+				txn.rollback().await
+			}
+		}
 	}
 }
 
@@ -448,15 +727,15 @@ impl WareMap {
 		WareMap(OrdMap::new(new()))
 	}
 
-	fn wares_clone(&self) -> Self{
+	async fn wares_clone(&self) -> Self{
 		let mut wares = Vec::new();
 		for ware in self.0.iter(None, false){
-			wares.push(Entry(ware.0.clone(), ware.1.tabs_clone()));
+			wares.push(Entry(ware.0.clone(), ware.1.tabs_clone().await));
 		}
 		WareMap(OrdMap::new(Tree::from_order(wares)))
 	}
 	// 注册库
-	fn register(&mut self, ware_name: Atom, ware: Arc<dyn Ware>) -> bool {
+	fn register(&mut self, ware_name: Atom, ware: Arc<DatabaseWare>) -> bool {
 		self.0.insert(ware_name, ware)
 	}
 	// 取消注册的库
@@ -467,14 +746,14 @@ impl WareMap {
 		}
 	}
 	// 寻找和指定表名能前缀匹配的表库
-	fn find(&self, ware_name: &Atom) -> Option<Arc<dyn Ware>> {
+	fn find(&self, ware_name: &Atom) -> Option<Arc<DatabaseWare>> {
 		match self.0.get(&ware_name) {
 			Some(b) => Some(b.clone()),
 			_ => None
 		}
 	}
 
-	fn keys(&self, key: Option<&Atom>, descending: bool) -> Keys<Tree<Atom, Arc<dyn Ware>>> {
+	fn keys(&self, key: Option<&Atom>, descending: bool) -> Keys<Tree<Atom, Arc<DatabaseWare>>> {
 		self.0.keys(key, descending)
 	}
 }
@@ -490,17 +769,16 @@ struct Tx {
 	writable: bool,
 	timeout: usize, // 子事务的预提交的超时时间, TODO 取提交的库的最大超时时间
 	id: Guid,
-	ware_log_map: FnvHashMap<Atom, Arc<dyn WareSnapshot>>,// 库名对应库快照
+	ware_log_map: FnvHashMap<Atom, Arc<DatabaseWareSnapshot>>,// 库名对应库快照
 	state: TxState,
 	_timer_ref: usize,
-	tab_txns: FnvHashMap<(Atom, Atom), Arc<dyn TabTxn>>, //表事务表
-	meta_txns: FnvHashMap<Atom, Arc<dyn MetaTxn>>, //元信息事务表
-	mgr: Mgr,
+	tab_txns: FnvHashMap<(Atom, Atom), Arc<DatabaseTabTxn>>, //表事务表
+	meta_txns: FnvHashMap<Atom, Arc<DatabaseMetaTxn>>, //元信息事务表
 }
 
 impl Tx {
 	// 预提交事务
-	async fn prepare(&mut self, tr: &Tr) -> DBResult {
+	async fn prepare(&mut self) -> DBResult {
 		//如果预提交内容为空，直接返回预提交成功
 		if self.meta_txns.len() == 0 && self.tab_txns.len() == 0 {
 			self.state = TxState::PreparOk;
@@ -511,7 +789,7 @@ impl Tx {
 		let alter_len = self.meta_txns.len();
 		if alter_len > 0 {
 			for ware in self.meta_txns.keys() {
-				match self.ware_log_map.get_mut(ware).unwrap().prepare(&self.id) {
+				match self.ware_log_map.get_mut(ware).unwrap().prepare(&self.id).await {
 					Err(s) =>{
 						self.state = TxState::PreparFail;
 						return Some(Err(s))
@@ -525,7 +803,7 @@ impl Tx {
 
 		//处理每个表的预提交
 		for val in self.tab_txns.values_mut() {
-			match val.prepare(self.timeout) {
+			match val.prepare(self.timeout).await {
 				Some(r) => match r {
 					Ok(_) => {
 						if count.fetch_sub(1, Ordering::SeqCst) == 1 {
@@ -543,7 +821,7 @@ impl Tx {
 		}
 		//处理tab alter的预提交
 		for val in self.meta_txns.values_mut() {
-			match val.prepare(self.timeout) {
+			match val.prepare(self.timeout).await {
 				Some(r) => match r {
 					Ok(_) => {
 						if count.fetch_sub(1, Ordering::SeqCst) == 1 {
@@ -562,7 +840,7 @@ impl Tx {
 		None
 	}
 	// 提交事务
-	async fn commit(&mut self, tr: &Tr) -> DBResult {
+	async fn commit(&mut self) -> DBResult {
 		self.state = TxState::Committing;
 		// 先提交mgr上的事务
 		let alter_len = self.meta_txns.len();
@@ -577,12 +855,10 @@ impl Tx {
 		}
 		// println!(" ======== pi_db::mgr::commit txid: {:?}, alter_len: {:?}, tab_txn_len: {:?}", self.id.time(), alter_len, self.tab_txns.len());
 		let count = Arc::new(AtomicUsize::new(len));
-		let c = count.clone();
-		let ware_log_map = self.ware_log_map.clone();
 
 		//处理每个表的提交
 		for (txn_name, val) in self.tab_txns.iter_mut() {
-			match val.commit() {
+			match val.commit().await {
 				Some(r) => {
 					match r {
 						Ok(logs) => {
@@ -608,7 +884,7 @@ impl Tx {
 		}
 		//处理tab alter的提交
 		for val in self.meta_txns.values_mut() {
-			match val.commit() {
+			match val.commit().await {
 				Some(r) => {
 					match r {
 						Ok(_) => (),
@@ -624,7 +900,7 @@ impl Tx {
 		None
 	}
 	// 回滚事务
-	async fn rollback(&mut self, tr: &Tr) -> DBResult {
+	async fn rollback(&mut self) -> DBResult {
 		self.state = TxState::Rollbacking;
 		// 先回滚mgr上的事务
 		let alter_len = self.meta_txns.len();
@@ -638,7 +914,7 @@ impl Tx {
 		
 		//处理每个表的预提交
 		for val in self.tab_txns.values_mut() {
-			match val.rollback() {
+			match val.rollback().await {
 				Some(r) => {
 					match r {
 						Ok(_) => (),
@@ -653,7 +929,7 @@ impl Tx {
 		}
 		//处理tab alter的预提交
 		for val in self.meta_txns.values_mut() {
-			match val.rollback() {
+			match val.rollback().await {
 				Some(r) => {
 					match r {
 						Ok(_) => (),
@@ -675,7 +951,6 @@ impl Tx {
 	// 查询
 	async fn query(
 		&mut self,
-		tr: &Tr,
 		arr: Vec<TabKV>,
 		lock_time: Option<usize>,
 		read_lock: bool
@@ -698,7 +973,7 @@ impl Tx {
 			let c2 = rvec.clone();
 			match self.build(&ware_name, &tab_name).await {
 				Some(r) => match r {
-					Ok(t) => match t.query(tkv, lock_time, read_lock) {
+					Ok(t) => match t.query(tkv, lock_time, read_lock).await {
 						Some(r) => match r {
 							Ok(vec) => {
 								match merge_result(&rvec, vec).await {
@@ -724,7 +999,7 @@ impl Tx {
 		None
 	}
 	// 修改，插入、删除及更新
-	async fn modify(&mut self, tr: &Tr, arr: Vec<TabKV>, lock_time: Option<usize>, read_lock: bool) -> DBResult {
+	async fn modify(&mut self, arr: Vec<TabKV>, lock_time: Option<usize>, read_lock: bool) -> DBResult {
 		if arr.len() == 0 {
 			return Some(Ok(()))
 		}
@@ -741,7 +1016,7 @@ impl Tx {
 			let c2 = count.clone();
 			match self.build(&ware_name, &tab_name).await {
 				Some(r) => match r {
-					Ok(t) => match self.handle_result(&count, t.modify(tkv, lock_time, read_lock)) {
+					Ok(t) => match self.handle_result(&count, t.modify(tkv, lock_time, read_lock).await) {
 						None => (),
 						rr => return rr
 					}
@@ -753,9 +1028,7 @@ impl Tx {
 		None
 	}
 	// 迭代
-	async fn iter(&mut self, tr: &Tr, ware: &Atom, tab: &Atom, key: Option<Bin>, descending: bool, filter: Filter) -> Option<IterResult> {
-		let tr1 = tr.clone();
-		let tr2 = tr.clone();
+	async fn iter(&mut self, ware: &Atom, tab: &Atom, key: Option<Bin>, descending: bool, filter: Filter) -> Option<IterResult> {
 		let key1 = key.clone();
 		let filter1 = filter.clone();
 
@@ -764,7 +1037,7 @@ impl Tx {
 		let tab_clone2 = tab.clone();
 		match self.build(&ware, &tab).await {
 			Some(r) => match r {
-				Ok(t) => self.iter_result(t.iter(&tab_clone2, key, descending, filter)),
+				Ok(t) => self.iter_result(t.iter(&tab_clone2, key, descending, filter).await),
 				Err(s) => {
 					self.state = TxState::Err;
 					Some(Err(s))
@@ -774,11 +1047,11 @@ impl Tx {
 		}
 	}
 	// 迭代
-	async fn key_iter(&mut self, tr: &Tr, ware: &Atom, tab: &Atom, key: Option<Bin>, descending: bool, filter: Filter) -> Option<KeyIterResult> {
+	async fn key_iter(&mut self, ware: &Atom, tab: &Atom, key: Option<Bin>, descending: bool, filter: Filter) -> Option<KeyIterResult> {
 		self.state = TxState::Doing;
 		match self.build(&ware, &tab).await {
 			Some(r) => match r {
-				Ok(t) => self.iter_result(t.key_iter(key, descending, filter)),
+				Ok(t) => self.iter_result(t.key_iter(key, descending, filter).await),
 				Err(s) => {
 					self.state = TxState::Err;
 					Some(Err(s))
@@ -788,11 +1061,11 @@ impl Tx {
 		}
 	}
 	// 表的大小
-	async fn tab_size(&mut self, tr: &Tr, ware_name: &Atom, tab_name: &Atom) -> Option<SResult<usize>> {
+	async fn tab_size(&mut self, ware_name: &Atom, tab_name: &Atom) -> Option<SResult<usize>> {
 		self.state = TxState::Doing;
 		match self.build(ware_name, tab_name).await {
 			Some(r) => match r {
-				Ok(t) => match self.single_result(t.tab_size()) {
+				Ok(t) => match self.single_result(t.tab_size().await) {
 					None => (),
 					rr => return rr
 				}
@@ -803,7 +1076,7 @@ impl Tx {
 		None
 	}
 	// 新增 修改 删除 表
-	async fn alter(&mut self, tr: &Tr, ware_name: &Atom, tab_name: &Atom, meta: Option<Arc<TabMeta>>) -> DBResult {
+	async fn alter(&mut self, ware_name: &Atom, tab_name: &Atom, meta: Option<Arc<TabMeta>>) -> DBResult {
 		self.state = TxState::Doing;
 		let ware = match self.ware_log_map.get(ware_name) {
 			Some(w) => match w.check(tab_name, &meta) { // 检查
@@ -820,22 +1093,22 @@ impl Tx {
 			ware.meta_txn(&id)
 		}).clone();
 		
-		self.single_result(txn.alter(tab_name, meta))
+		self.single_result(txn.alter(tab_name, meta).await)
 	}
 	// 表改名
-	fn rename(&mut self, _tr: &Tr, _ware_name: &Atom, _old_name: &Atom, _new_name: Atom, _cb: TxCallback) -> DBResult {
+	fn rename(&mut self, _ware_name: &Atom, _old_name: &Atom, _new_name: Atom, _cb: TxCallback) -> DBResult {
 		self.state = TxState::Doing;
 		// TODO
 		None
 	}
 	// 创建表
-	async fn build(&mut self, ware_name: &Atom, tab_name: &Atom) -> Option<SResult<Arc<dyn TabTxn>>> {
+	async fn build(&mut self, ware_name: &Atom, tab_name: &Atom) -> Option<SResult<Arc<DatabaseTabTxn>>> {
 		//let txn_key = Atom::from(String::from((*ware_name).as_str()) + "##" + tab_name.as_str());
 		let txn_key = (ware_name.clone(), tab_name.clone());
 		let txn = match self.tab_txns.get(&txn_key) {
 			Some(r) => return Some(Ok(r.clone())),
 			_ => match self.ware_log_map.get(ware_name) {
-				Some(ware) => match ware.tab_txn(tab_name, &self.id, self.writable) {
+				Some(ware) => match ware.tab_txn(tab_name, &self.id, self.writable).await {
 					Some(r) => match r {
 						Ok(txn) => txn,
 						err => {

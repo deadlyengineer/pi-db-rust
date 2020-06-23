@@ -648,39 +648,39 @@ pub struct MemeryMetaTxn;
 
 impl MemeryMetaTxn {
 	// 创建表、修改指定表的元数据
-	async fn alter(&self, _tab: &Atom, _meta: Option<Arc<TabMeta>>) -> DBResult {
+	pub async fn alter(&self, _tab: &Atom, _meta: Option<Arc<TabMeta>>) -> DBResult {
 		Some(Ok(()))
 	}
 
 	// 快照拷贝表
-	async fn snapshot(&self, _tab: &Atom, _from: &Atom) -> DBResult{
+	pub async fn snapshot(&self, _tab: &Atom, _from: &Atom) -> DBResult{
 		Some(Ok(()))
 	}
 	// 修改指定表的名字
-	async fn rename(&self, _tab: &Atom, _new_name: &Atom) -> DBResult {
+	pub async fn rename(&self, _tab: &Atom, _new_name: &Atom) -> DBResult {
 		Some(Ok(()))
 	} 
 
 	// 获得事务的状态
-	fn get_state(&self) -> TxState {
+	pub fn get_state(&self) -> TxState {
 		TxState::Ok
 	}
 	// 预提交一个事务
-	async fn prepare(&self, _timeout: usize) -> DBResult {
+	pub async fn prepare(&self, _timeout: usize) -> DBResult {
 		Some(Ok(()))
 	}
 	// 提交一个事务
-	async fn commit(&self) -> CommitResult {
+	pub async fn commit(&self) -> CommitResult {
 		Some(Ok(FnvHashMap::with_capacity_and_hasher(0, Default::default())))
 	}
 	// 回滚一个事务
-	async fn rollback(&self) -> DBResult {
+	pub async fn rollback(&self) -> DBResult {
 		Some(Ok(()))
 	}
 }
 
 mod tests {
-	use crate::mgr::Mgr;
+	use crate::mgr::{ DatabaseWare, Mgr };
 	use atom::Atom;
 	use super::*;
 	use guid::{Guid, GuidGen};
@@ -690,13 +690,12 @@ mod tests {
 	fn it_works() {
 		let pool = MultiTaskPool::new("Store-Runtime".to_string(), 4, 1024 * 1024, 10, Some(10));
 		let rt: MultiTaskRuntime<()>  = pool.startup(true);
-		
-		let _ = rt.spawn(rt.alloc(), async move {
-			println!("helo world");
-		});
 
-		let mgr = Mgr::new(GuidGen::new(0, 0));
-		// mgr.register(Atom::from("memory"), Arc::new(DB::new()));
-		let tr = mgr.transaction(true);
+		let _ = rt.spawn(rt.alloc(), async move {
+			let mgr = Mgr::new(GuidGen::new(0, 0));
+			let ware = DatabaseWare::new_memware(DB::new());
+			let _ = mgr.register(Atom::from("memory"), Arc::new(ware));
+			let tr = mgr.transaction(true);
+		});
 	}
 }
