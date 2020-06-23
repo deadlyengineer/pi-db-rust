@@ -43,14 +43,14 @@ lazy_static! {
 * 表库及事务管理器
 */
 #[derive(Clone)]
-pub struct Mgr(Arc<Mutex<Manager>>, Arc<Mutex<WareMap>>, Arc<GuidGen>, Statistics);
+pub struct Mgr(Arc<Mutex<WareMap>>, Arc<GuidGen>, Statistics);
 
 unsafe impl Send for Mgr {}
 unsafe impl Sync for Mgr {}
 
 impl fmt::Debug for Mgr {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "({:?}, {:?}, {:?}, {:?})", self.0, self.1, self.2, self.3)
+		write!(f, "({:?}, {:?}, {:?})", self.0, self.1, self.2)
 	}
 }
 
@@ -61,29 +61,29 @@ impl Mgr {
 	* @returns 返回表库及事务管理器管理器
 	*/
 	pub fn new(gen: GuidGen) -> Self {
-		Mgr(Arc::new(Mutex::new(Manager::new())), Arc::new(Mutex::new(WareMap::new())), Arc::new(gen), Statistics::new())
+		Mgr(Arc::new(Mutex::new(WareMap::new())), Arc::new(gen), Statistics::new())
 	}
 	// 浅拷贝，库表不同，共用同一个统计信息和GuidGen
 	pub fn shallow_clone(&self) -> Self {
 		// TODO 拷库表
-		Mgr(Arc::new(Mutex::new(Manager::new())), Arc::new(Mutex::new(self.1.lock().unwrap().wares_clone())), self.2.clone(), self.3.clone())
+		Mgr(Arc::new(Mutex::new(self.0.lock().unwrap().wares_clone())), self.1.clone(), self.2.clone())
 	}
 	// 深拷贝，库表及统计信息不同
 	pub fn deep_clone(&self, clone_guid_gen: bool) -> Self {
 		let gen = if clone_guid_gen {
-			self.2.clone()
+			self.1.clone()
 		}else{
-			Arc::new(GuidGen::new(self.2.node_time(), self.2.node_id()))
+			Arc::new(GuidGen::new(self.1.node_time(), self.1.node_id()))
 		};
-		Mgr(Arc::new(Mutex::new(Manager::new())), Arc::new(Mutex::new(WareMap::new())), gen, self.3.clone())
+		Mgr(Arc::new(Mutex::new(WareMap::new())), gen, self.2.clone())
 	}
 	// 注册库
 	pub fn register(&self, ware_name: Atom, ware: Arc<dyn Ware>) -> bool {
-		self.1.lock().unwrap().register(ware_name, ware)
+		self.0.lock().unwrap().register(ware_name, ware)
 	}
 	// 取消注册数据库
 	pub fn unregister(&mut self, ware_name: &Atom) -> bool {
-		self.1.lock().unwrap().unregister(ware_name)
+		self.0.lock().unwrap().unregister(ware_name)
 	}
 	/**
 	* 获取表的元信息
@@ -103,21 +103,32 @@ impl Mgr {
 	* @returns 返回事务
 	*/
 	pub fn transaction(&self, writable: bool) -> Tr {		
-		let id = self.2.gen(0);
-		self.3.acount.fetch_add(1, Ordering::SeqCst);
-		let map = {
-			self.1.lock().unwrap().clone()
+		let id = self.1.gen(0);
+		self.2.acount.fetch_add(1, Ordering::SeqCst);
+		let ware_map = {
+			self.0.lock().unwrap().clone()
 		};
-		self.0.lock().unwrap().transaction(map, writable, id, self.clone())
-	}
 
-	pub fn listen(&self, monitor: Arc<dyn Monitor>){
-		self.0.lock().unwrap().register_monitor(monitor);
+		let mut map = FnvHashMap::with_capacity_and_hasher(ware_map.0.size() * 3 / 2, Default::default());
+		for Entry(k, v) in ware_map.0.iter(None, false){
+			map.insert(k.clone(), v.snapshot());
+		}
+		Tr(Arc::new(Mutex::new(Tx {
+			writable,
+			timeout: TIMEOUT,
+			id: id.clone(),
+			ware_log_map: map,
+			state: TxState::Ok,
+			_timer_ref: 0,
+			tab_txns: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
+			meta_txns: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
+			mgr:self.clone(),
+		})))
 	}
 
 	pub fn ware_name_list(&self) -> Vec<String> {
 		let mut arr = Vec::new();
-		let lock = self.1.lock().unwrap();
+		let lock = self.0.lock().unwrap();
 		let mut iter = lock.keys(None, false);
 		loop {
 			match iter.next() {
@@ -131,7 +142,7 @@ impl Mgr {
 	// 寻找指定的库
 	pub fn find(&self, ware_name: &Atom) -> Option<Arc<dyn Ware>> {
 		let map = {
-			self.1.lock().unwrap().clone()
+			self.0.lock().unwrap().clone()
 		};
 		map.find(ware_name)
 	}
@@ -431,7 +442,6 @@ impl Manager {
 			_timer_ref: 0,
 			tab_txns: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
 			meta_txns: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
-			monitors: self.monitors.clone(),
 			mgr:mgr,
 		})));
 		//self.weak_map.insert(id, Arc::downgrade(&(tr.0)));
@@ -505,7 +515,6 @@ struct Tx {
 	_timer_ref: usize,
 	tab_txns: FnvHashMap<(Atom, Atom), Arc<dyn TabTxn>>, //表事务表
 	meta_txns: FnvHashMap<Atom, Arc<dyn MetaTxn>>, //元信息事务表
-	monitors: OrdMap<Tree<usize, Arc<dyn Monitor>>>, //监听器列表
 	mgr: Mgr,
 }
 
@@ -604,7 +613,6 @@ impl Tx {
 		let tr1 = tr.clone();
 		let txid = self.id.clone();
 		let writable = self.writable;
-		let monitors = self.monitors.clone();
 		let mgr = self.mgr.clone();
 		let ware_log_map = self.ware_log_map.clone();
 		let bf = Arc::new(move |r: SResult<()> | {
@@ -617,10 +625,6 @@ impl Tx {
 					match  MODS.lock().unwrap().remove(&txid.time()) {
 						Some(mods) => {
 							for m in mods {
-								// 数据库修改通知到订阅者
-								for Entry(_, monitor) in monitors.iter(None, false){
-									monitor.notify(Event{seq: get_next_seq(), ware: m.ware.clone(), tab: m.tab.clone(), other: EventType::Tab{key:m.key.clone(), value: m.value.clone()}}, mgr.clone())
-								}
 								if let Some(w) = ware_log_map.get(&m.ware.clone()) {
 									w.notify(Event{seq: get_next_seq(), ware: m.ware.clone(), tab: m.tab.clone(), other: EventType::Tab{key:m.key.clone(), value: m.value.clone()}});
 								}
@@ -645,9 +649,6 @@ impl Tx {
 							for (k, v) in logs.into_iter(){ //将表的提交日志添加到事件列表中
 								match v {
 									RwLog::Write(value) => {
-										for Entry(_, monitor) in self.monitors.iter(None, false){
-											monitor.notify(Event{seq: get_next_seq(), ware: txn_name.0.clone(), tab: txn_name.1.clone(), other: EventType::Tab{key:k.clone(), value: value.clone()}}, self.mgr.clone());
-										}
 										if let Some(w) = self.ware_log_map.get(&txn_name.0) {
 											w.notify(Event{seq: get_next_seq(), ware: txn_name.0.clone(), tab: txn_name.1.clone(), other: EventType::Tab{key:k.clone(), value: value.clone()}});
 										}
