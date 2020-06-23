@@ -23,6 +23,7 @@ use guid::{Guid, GuidGen};
 use crate::db::{SResult, DBResult, IterResult, KeyIterResult, Filter, TabKV, TxCallback, TxQueryCallback, TxState, MetaTxn, TabTxn, Event, EventType, Ware, WareSnapshot, Bin, RwLog, TabMeta, CommitResult};
 use r#async::lock::mutex_lock::Mutex;
 use crate::memery_db::{DBSnapshot, DB, RefMemeryTxn, MemeryMetaTxn};
+use crate::tabs::TxnType;
 
 pub struct CommitChan(pub Guid, pub Sender<Arc<Vec<TabKV>>>);
 
@@ -105,9 +106,15 @@ impl Mgr {
 		};
 
 		let mut map = FnvHashMap::with_capacity_and_hasher(ware_map.0.size() * 3 / 2, Default::default());
-		for Entry(k, v) in ware_map.0.iter(None, false){
-			map.insert(k.clone(), v.snapshot().await);
+		let mut tmp = vec![];
+		for Entry(k, v) in ware_map.0.iter(None, false) {
+			tmp.push((k.clone(), v));
 		}
+
+		for (k, v) in tmp {
+			map.insert(k, v.snapshot().await);
+		}
+
 		Tr(Arc::new(Mutex::new(Tx {
 			writable,
 			timeout: TIMEOUT,
@@ -441,7 +448,9 @@ impl DatabaseWareSnapshot {
 				let txn = shot.tab_txn(tab_name, id, writable).await;
 				match txn {
 					Some(Ok(t)) => {
-						Some(Ok(Arc::new(DatabaseTabTxn::MemTabTxn(t))))
+						match t {
+							TxnType::MemTxn(t1) => Some(Ok(Arc::new(DatabaseTabTxn::MemTabTxn(t1))))
+						}
 					}
 					_ => Some(Err("create tab txn failed".to_string()))
 				}
@@ -489,6 +498,9 @@ impl DatabaseWareSnapshot {
 pub enum DatabaseWare {
 	MemWare(Arc<DB>)
 }
+
+unsafe impl Send for DatabaseWare {}
+unsafe impl Sync for DatabaseWare {}
 
 impl DatabaseWare {
 	pub fn new_memware(db: DB) -> DatabaseWare {
@@ -546,10 +558,10 @@ impl DatabaseTabTxn {
 		DatabaseTabTxn::MemTabTxn(Arc::new(txn))
 	}
 
-	fn get_state(&self) -> TxState {
+	async fn get_state(&self) -> TxState {
 		match self {
 			DatabaseTabTxn::MemTabTxn(txn) => {
-				txn.get_state()
+				txn.get_state().await
 			}
 		}
 	}
@@ -846,7 +858,7 @@ impl Tx {
 		let alter_len = self.meta_txns.len();
 		if alter_len > 0 {
 			for ware in self.meta_txns.keys() {
-				self.ware_log_map.get(ware).unwrap().commit(&self.id);
+				self.ware_log_map.get(ware).unwrap().commit(&self.id).await;
 			}
 		}
 		let len = self.tab_txns.len() + alter_len;
@@ -865,9 +877,10 @@ impl Tx {
 							for (k, v) in logs.into_iter(){ //将表的提交日志添加到事件列表中
 								match v {
 									RwLog::Write(value) => {
-										if let Some(w) = self.ware_log_map.get(&txn_name.0) {
-											w.notify(Event{seq: get_next_seq(), ware: txn_name.0.clone(), tab: txn_name.1.clone(), other: EventType::Tab{key:k.clone(), value: value.clone()}});
-										}
+										// TODO
+										// if let Some(w) = self.ware_log_map.get(&txn_name.0) {
+										// 	w.notify(Event{seq: get_next_seq(), ware: txn_name.0.clone(), tab: txn_name.1.clone(), other: EventType::Tab{key:k.clone(), value: value.clone()}});
+										// }
 									},
 									_ => (),
 								}
@@ -906,7 +919,7 @@ impl Tx {
 		let alter_len = self.meta_txns.len();
 		if alter_len > 0 {
 			for ware in self.meta_txns.keys() {
-				self.ware_log_map.get(ware).unwrap().rollback(&self.id);
+				self.ware_log_map.get(ware).unwrap().rollback(&self.id).await;
 			}
 		}
 		let len = self.tab_txns.len() + alter_len;
@@ -1081,7 +1094,7 @@ impl Tx {
 		let ware = match self.ware_log_map.get(ware_name) {
 			Some(w) => match w.check(tab_name, &meta) { // 检查
 				Ok(_) =>{
-					w.alter(tab_name, meta.clone());
+					w.alter(tab_name, meta.clone()).await;
 					w
 				},
 				Err(s) => return self.single_result_err(Err(s))

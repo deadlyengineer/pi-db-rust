@@ -16,6 +16,7 @@ use crate::tabs::{TabLog, Tabs, Prepare};
 use crate::db::BuildDbType;
 use r#async::lock::mutex_lock::Mutex;
 use r#async::lock::rw_lock::RwLock;
+use crate::tabs::TxnType;
 
 //内存库前缀
 const MEMORY_WARE_PREFIX: &'static str = "mem_ware_";
@@ -101,11 +102,10 @@ impl MTab {
 		};
 		MTab(Arc::new(Mutex::new(tab)))
 	}
-	pub async fn transaction(&self, id: &Guid, writable: bool) -> Arc<RefMemeryTxn> {
+	pub async fn transaction(&self, id: &Guid, writable: bool) -> RefMemeryTxn {
 		self.0.lock().await.trans_count.sum(1);
 
-		let txn = MemeryTxn::new(self.clone(), id, writable).await;
-		return Arc::new(txn)
+		MemeryTxn::new(self.clone(), id, writable).await
 	}
 }
 
@@ -179,7 +179,7 @@ impl DBSnapshot {
 		self.1.lock().await.alter(tab_name, meta)
 	}
 	// 创建指定表的表事务
-	pub async fn tab_txn(&self, tab_name: &Atom, id: &Guid, writable: bool) -> Option<SResult<Arc<RefMemeryTxn>>> {
+	pub async fn tab_txn(&self, tab_name: &Atom, id: &Guid, writable: bool) -> Option<SResult<TxnType>> {
 		self.1.lock().await.build(BuildDbType::MemoryDB, tab_name, id, writable).await
 	}
 	// 创建一个meta事务
@@ -213,7 +213,7 @@ pub struct MemeryTxn {
 	state: TxState,
 }
 
-pub struct RefMemeryTxn(RefCell<MemeryTxn>);
+pub struct RefMemeryTxn(Mutex<MemeryTxn>);
 
 impl MemeryTxn {
 	//开始事务
@@ -228,7 +228,7 @@ impl MemeryTxn {
 			rwlog: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
 			state: TxState::Ok,
 		};
-		return RefMemeryTxn(RefCell::new(txn))
+		return RefMemeryTxn(Mutex::new(txn))
 	}
 	//获取数据
 	pub async fn get(&mut self, key: Bin) -> Option<Bin> {
@@ -366,12 +366,12 @@ impl MemeryTxn {
 
 impl RefMemeryTxn {
 	// 获得事务的状态
-	pub fn get_state(&self) -> TxState {
-		self.0.borrow().state.clone()
+	pub async fn get_state(&self) -> TxState {
+		self.0.lock().await.state.clone()
 	}
 	// 预提交一个事务
 	pub async fn prepare(&self, _timeout: usize) -> DBResult {
-		let mut txn = self.0.borrow_mut();
+		let mut txn = self.0.lock().await;
 		txn.state = TxState::Preparing;
 		match txn.prepare1().await {
 			Ok(()) => {
@@ -386,7 +386,7 @@ impl RefMemeryTxn {
 	}
 	// 提交一个事务
 	pub async fn commit(&self) -> CommitResult {
-		let mut txn = self.0.borrow_mut();
+		let mut txn = self.0.lock().await;
 		txn.state = TxState::Committing;
 		match txn.commit1().await {
 			Ok(log) => {
@@ -398,7 +398,7 @@ impl RefMemeryTxn {
 	}
 	// 回滚一个事务
 	pub async fn rollback(&self) -> DBResult {
-		let mut txn = self.0.borrow_mut();
+		let mut txn = self.0.lock().await;
 		txn.state = TxState::Rollbacking;
 		match txn.rollback1().await {
 			Ok(()) => {
@@ -420,7 +420,7 @@ impl RefMemeryTxn {
 		_lock_time: Option<usize>,
 		_readonly: bool
 	) -> Option<SResult<Vec<TabKV>>> {
-		let mut txn = self.0.borrow_mut();
+		let mut txn = self.0.lock().await;
 		let mut value_arr = Vec::new();
 		for tabkv in arr.iter() {
 			let value = match txn.get(tabkv.key.clone()).await {
@@ -442,7 +442,7 @@ impl RefMemeryTxn {
 	}
 	// 修改，插入、删除及更新
 	pub async fn modify(&self, arr: Arc<Vec<TabKV>>, _lock_time: Option<usize>, _readonly: bool) -> DBResult {
-		let mut txn = self.0.borrow_mut();
+		let mut txn = self.0.lock().await;
 		for tabkv in arr.iter() {
 			if tabkv.value == None {
 				match txn.delete(tabkv.key.clone()).await {
@@ -472,7 +472,7 @@ impl RefMemeryTxn {
 		descending: bool,
 		filter: Filter
 	) -> Option<IterResult> {
-		let b = self.0.borrow_mut();
+		let b = self.0.lock().await;
 		let key = match key {
 			Some(k) => Some(Bon::new(k)),
 			None => None,
@@ -491,7 +491,7 @@ impl RefMemeryTxn {
 		descending: bool,
 		filter: Filter
 	) -> Option<KeyIterResult> {
-		let b = self.0.borrow_mut();
+		let b = self.0.lock().await;
 		let key = match key {
 			Some(k) => Some(Bon::new(k)),
 			None => None,
@@ -516,7 +516,7 @@ impl RefMemeryTxn {
 	}
 	// 表的大小
 	pub async fn tab_size(&self) -> Option<SResult<usize>> {
-		let txn = self.0.borrow();
+		let txn = self.0.lock().await;
 		Some(Ok(txn.root.size()))
 	}
 }
@@ -576,7 +576,7 @@ impl MemIter{
 
 impl Iter for MemIter{
 	type Item = (Bin, Bin);
-	fn next(&mut self, _cb: Arc<dyn Fn(NextResult<Self::Item>)>) -> Option<NextResult<Self::Item>>{
+	fn next(&mut self) -> Option<NextResult<Self::Item>>{
 		self.iter_count.sum(1);
 
 		let mut it = unsafe{Box::from_raw(self.point as *mut <Tree<Bin, Bin> as OIter<'_>>::IterType)};
@@ -626,7 +626,7 @@ impl MemKeyIter{
 
 impl Iter for MemKeyIter{
 	type Item = Bin;
-	fn next(&mut self, _cb: Arc<dyn Fn(NextResult<Self::Item>)>) -> Option<NextResult<Self::Item>>{
+	fn next(&mut self) -> Option<NextResult<Self::Item>>{
 		self.iter_count.sum(1);
 
 		let it = unsafe{Box::from_raw(self.point as *mut Keys<'_, Tree<Bin, Bin>>)};
@@ -687,21 +687,84 @@ mod tests {
 	use guid::{Guid, GuidGen};
 	use r#async::rt::multi_thread::{MultiTaskPool, MultiTaskRuntime};
 	use crate::db::TabMeta;
+	use bon::WriteBuffer;
 
 	#[test]
-	fn it_works() {
+	fn test_memory_db() {
 		let pool = MultiTaskPool::new("Store-Runtime".to_string(), 4, 1024 * 1024, 10, Some(10));
 		let rt: MultiTaskRuntime<()>  = pool.startup(true);
 
 		let _ = rt.spawn(rt.alloc(), async move {
 			let mgr = Mgr::new(GuidGen::new(0, 0));
 			let ware = DatabaseWare::new_memware(DB::new());
-			let _ = mgr.register(Atom::from("memory"), Arc::new(ware));
+			let _ = mgr.register(Atom::from("memory"), Arc::new(ware)).await;
 			let tr = mgr.transaction(true).await;
-			// let meta = TabMeta::new(sinfo::EnumType::Str, sinfo::EnumType::Str);
-			// tr.alter(&Atom::from("memory"), &Atom::from("hello"), Some(Arc::new(meta))).await;
-			// tr.prepare().await;
-			// tr.commit().await;
+
+			let meta = TabMeta::new(sinfo::EnumType::Str, sinfo::EnumType::Str);
+			let meta1 = TabMeta::new(sinfo::EnumType::Str, sinfo::EnumType::Str);
+
+			tr.alter(&Atom::from("memory"), &Atom::from("hello"), Some(Arc::new(meta))).await;
+			tr.alter(&Atom::from("memory"), &Atom::from("world"), Some(Arc::new(meta1))).await;
+			let p = tr.prepare().await;
+			println!("tr prepare ---- {:?}", p);
+			tr.commit().await;
+
+			let info = tr.tab_info(&Atom::from("memory"), &Atom::from("hello")).await;
+			println!("info ---- {:?} ", info);
+
+			let mut wb = WriteBuffer::new();
+			wb.write_bin(b"hello", 0..5);
+
+			println!("wb = {:?}", wb.bytes);
+
+			let mut item1 = TabKV {
+				ware: Atom::from("memory"),
+				tab: Atom::from("hello"),
+				key: Arc::new(wb.bytes.clone()),
+				value: Some(Arc::new(wb.bytes)),
+				index: 0
+			};
+
+			let tr2 = mgr.transaction(true).await;
+
+			let r = tr2.modify(vec![item1.clone()], None, false).await;
+			println!("modify result = {:?}", r);
+			let p = tr2.prepare().await;
+			tr2.commit().await;
+
+			let tr3 = mgr.transaction(false).await;
+			item1.value = None;
+
+			let q = tr3.query(vec![item1], None, false).await;
+			println!("query item = {:?}", q);
+			tr3.prepare().await;
+			tr3.commit().await;
+
+			let tr4 = mgr.transaction(false).await;
+			let size = tr4.tab_size(&Atom::from("memory"), &Atom::from("hello")).await;
+			println!("tab size = {:?}", size);
+			{
+				let iter = tr4.iter(&Atom::from("memory"), &Atom::from("hello"), None, false, None).await;
+
+				if let Some(Ok(mut it)) = iter {
+					loop {
+						let item = it.next();
+						println!("iter item = {:?}", item);
+						match item {
+							Some(Ok(None)) | Some(Err(_)) => break,
+							_ => {}
+						}
+					}
+				}
+			}
+
+			let tabs = tr4.list(&Atom::from("memory")).await;
+			println!("tabs = {:?}", tabs);
+
+			tr4.prepare().await;
+			tr4.commit().await;
 		});
+
+		std::thread::sleep(std::time::Duration::from_secs(2));
 	}
 }

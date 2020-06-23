@@ -17,6 +17,9 @@ use crate::memery_db::DB as MemoryDB;
 use crate::memery_db::{ MTab, RefMemeryTxn };
 use r#async::lock::mutex_lock::Mutex;
 
+pub enum TxnType {
+	MemTxn(Arc<RefMemeryTxn>)
+}
 // 表结构及修改日志
 pub struct TabLog {
 	map: OrdMap<Tree<Atom, TabInfo>>,
@@ -81,7 +84,7 @@ impl TabLog {
 		self.meta_names.insert(tab_name.clone());
 	}
 	// 创建表事务
-	pub async fn build(&self, ware: BuildDbType, tab_name: &Atom, id: &Guid, writable: bool) -> Option<SResult<Arc<RefMemeryTxn>>> {
+	pub async fn build(&self, ware: BuildDbType, tab_name: &Atom, id: &Guid, writable: bool) -> Option<SResult<TxnType>> {
 		match self.map.get(tab_name) {
 			Some(ref info) => {
 				let tab = {
@@ -123,7 +126,7 @@ impl TabLog {
 				};
 				// 根据结果创建事务或返回错误
 				match tab {
-					Some(tab) => Some(Ok(tab.transaction(&id, writable).await)),
+					Some(tab) => Some(Ok(TxnType::MemTxn(Arc::new(tab.transaction(&id, writable).await)))),
 					None => Some(Err(String::from("create tx error")))
 				}
 			},

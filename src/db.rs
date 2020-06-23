@@ -33,7 +33,10 @@ pub type NextResult<T> = SResult<Option<T>>;
 pub type TxCallback = Arc<dyn Fn(SResult<()>)>;
 pub type TxQueryCallback = Arc<dyn Fn(SResult<Vec<TabKV>>)>;
 
-pub type Filter = Option<Arc<dyn Fn(Bin)-> Option<Bin>>>;
+// 这个类型定义了，但从未使用，没实现Send， 不能在多线程运行时使用
+// pub type Filter = Option<Arc<dyn Fn(Bin)-> Option<Bin>>>;
+pub type Filter = Option<bool>;
+
 
 pub struct TxCbWrapper(pub TxCallback);
 
@@ -286,7 +289,7 @@ impl TabKV {
 
 pub trait Iter {
 	type Item;
-	fn next(&mut self, cb: Arc<dyn Fn(NextResult<Self::Item>)>) -> Option<NextResult<Self::Item>>;
+	fn next(&mut self) -> Option<NextResult<Self::Item>>;
 }
 
 #[derive(Clone, Debug)]
