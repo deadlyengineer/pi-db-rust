@@ -29,7 +29,6 @@ unsafe impl Send for CommitChan {}
 unsafe impl Sync for CommitChan {}
 
 lazy_static! {
-	static ref MODS: Arc<Mutex<HashMap<u64, Vec<TabKV>>>> = Arc::new(Mutex::new(HashMap::new()));
 	pub static ref COMMIT_CHAN: (Sender<CommitChan>, Receiver<CommitChan>) = unbounded();
 	pub static ref SEQ_CHAN: (Sender<u64>, Receiver<u64>) = unbounded();
 	static ref SEQ: AtomicU64 = {
@@ -617,17 +616,7 @@ impl Tx {
 			};
 			if c.fetch_sub(1, Ordering::SeqCst) == 1 {
 				if writable {
-					match  MODS.lock().unwrap().remove(&txid.time()) {
-						Some(mods) => {
-							for m in mods {
-								if let Some(w) = ware_log_map.get(&m.ware.clone()) {
-									w.notify(Event{seq: get_next_seq(), ware: m.ware.clone(), tab: m.tab.clone(), other: EventType::Tab{key:m.key.clone(), value: m.value.clone()}});
-								}
-							}
-							cb(Ok(()));
-						}
-						None => {}
-					}
+					
 				} else {
 					// 只读事务直接提交
 					cb(Ok(()))
@@ -732,9 +721,6 @@ impl Tx {
 				_ => ()
 			}
 		}
-		// 清理缓存
-		MODS.lock().await.remove(&self.id.time());
-
 		None
 	}
 	// 修改，插入、删除及更新
@@ -856,10 +842,6 @@ impl Tx {
 
 		// 保存每个txid的修改
 		let data = arr.iter().cloned().collect::<Vec<TabKV>>();
-		MODS.lock().await.entry(self.id.time()).and_modify(|v| {
-			v.extend(data.clone());
-		}).or_insert(data);
-
 		let map = tab_map(arr);
 		self.state = TxState::Doing;
 		let count = Arc::new(AtomicUsize::new(map.len()));
