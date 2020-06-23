@@ -191,10 +191,10 @@ impl Tr {
 	* @param cb 预提交回调
 	* @returns 返回预提交结果
 	*/
-	pub async fn prepare(&self, cb: TxCallback) -> DBResult {
+	pub async fn prepare(&self) -> DBResult {
 		let mut t = self.0.lock().await;
 		match t.state {
-			TxState::Ok => t.prepare(self, cb),
+			TxState::Ok => t.prepare(self),
 			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
 		}
 	}
@@ -203,10 +203,10 @@ impl Tr {
 	* @param cb 提交回调
 	* @returns 返回提交结果
 	*/
-	pub async fn commit(&self, cb: TxCallback) -> DBResult {
+	pub async fn commit(&self) -> DBResult {
 		let mut t = self.0.lock().await;
 		match t.state {
-			TxState::PreparOk => t.commit(self, cb).await,
+			TxState::PreparOk => t.commit(self).await,
 			_ => Some(Err(String::from("InvalidState, expect:TxState::PreparOk, found:") + t.state.to_string().as_str())),
 		}
 	}
@@ -215,19 +215,19 @@ impl Tr {
 	* @param cb 回滚回调
 	* @returns 返回回滚结果
 	*/
-	pub async fn rollback(&self, cb: TxCallback) -> DBResult {
+	pub async fn rollback(&self) -> DBResult {
 		let mut t = self.0.lock().await;
 		match t.state {
 			TxState::Committing|TxState::Commited|TxState::CommitFail|TxState::Rollbacking|TxState::Rollbacked|TxState::RollbackFail =>
 				return Some(Err(String::from("InvalidState, expect:TxState::Committing | TxState::Commited| TxState::CommitFail| TxState::Rollbacking| TxState::Rollbacked| TxState::RollbackFail, found:") + t.state.to_string().as_str())),
-			_ => t.rollback(self, cb).await
+			_ => t.rollback(self).await
 		}
 	}
 	// 锁
-	pub async fn key_lock(&self, arr: Vec<TabKV>, lock_time: usize, read_lock: bool, cb: TxCallback) -> DBResult {
+	pub async fn key_lock(&self, arr: Vec<TabKV>, lock_time: usize, read_lock: bool) -> DBResult {
 		let mut t = self.0.lock().await;
 		match t.state {
-			TxState::Ok => t.key_lock(self, arr, lock_time, read_lock, cb),
+			TxState::Ok => t.key_lock(self, arr, lock_time, read_lock).await,
 			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
 		}
 	}
@@ -243,12 +243,11 @@ impl Tr {
 		&self,
 		arr: Vec<TabKV>,
 		lock_time: Option<usize>,
-		read_lock: bool,
-		cb: TxQueryCallback,
+		read_lock: bool
 	) -> Option<SResult<Vec<TabKV>>> {
 		let mut t = self.0.lock().await;
 		match t.state {
-			TxState::Ok => t.query(self, arr, lock_time, read_lock, cb).await,
+			TxState::Ok => t.query(self, arr, lock_time, read_lock).await,
 			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
 		}
 	}
@@ -260,13 +259,13 @@ impl Tr {
 	* @param cb 修改回调
 	* @returns 修改结果
 	*/
-	pub async fn modify(&self, arr: Vec<TabKV>, lock_time: Option<usize>, read_lock: bool, cb: TxCallback) -> DBResult {
+	pub async fn modify(&self, arr: Vec<TabKV>, lock_time: Option<usize>, read_lock: bool) -> DBResult {
 		let mut t = self.0.lock().await;
 		if !t.writable {
 			return Some(Err(String::from("Readonly")))
 		}
 		match t.state {
-			TxState::Ok => t.modify(self, arr, lock_time, read_lock, cb).await,
+			TxState::Ok => t.modify(self, arr, lock_time, read_lock).await,
 			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
 		}
 	}
@@ -289,12 +288,11 @@ impl Tr {
 		tab: &Atom,
 		key: Option<Bin>,
 		descending: bool,
-		filter: Filter,
-		cb: Arc<dyn Fn(IterResult)>,
+		filter: Filter
 	) -> Option<IterResult> {
 		let mut t = self.0.lock().await;
 		match t.state {
-			TxState::Ok => t.iter(self, ware, tab, key, descending, filter, cb),
+			TxState::Ok => t.iter(self, ware, tab, key, descending, filter).await,
 			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
 		}
 	}
@@ -305,12 +303,11 @@ impl Tr {
 		tab: &Atom,
 		key: Option<Bin>,
 		descending: bool,
-		filter: Filter,
-		cb: Arc<dyn Fn(KeyIterResult)>,
+		filter: Filter
 	) -> Option<KeyIterResult> {
 		let mut t = self.0.lock().await;
 		match t.state {
-			TxState::Ok => t.key_iter(self, ware, tab, key, descending, filter, cb),
+			TxState::Ok => t.key_iter(self, ware, tab, key, descending, filter).await,
 			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
 		}
 	}
@@ -347,10 +344,10 @@ impl Tr {
 		}
 	}
 	// 表的大小
-	pub async fn tab_size(&self, ware_name:&Atom, tab_name: &Atom, cb: Arc<dyn Fn(SResult<usize>)>) -> Option<SResult<usize>> {
+	pub async fn tab_size(&self, ware_name:&Atom, tab_name: &Atom) -> Option<SResult<usize>> {
 		let mut t = self.0.lock().await;
 		match t.state {
-			TxState::Ok => t.tab_size(self, ware_name, tab_name, cb),
+			TxState::Ok => t.tab_size(self, ware_name, tab_name).await,
 			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
 		}
 	}
@@ -362,13 +359,13 @@ impl Tr {
 	* @param cb 更新回调
 	* @returns 返回更新结果
 	*/
-	pub async fn alter(&self, ware_name:&Atom, tab_name: &Atom, meta: Option<Arc<TabMeta>>, cb: TxCallback) -> DBResult {
+	pub async fn alter(&self, ware_name:&Atom, tab_name: &Atom, meta: Option<Arc<TabMeta>>) -> DBResult {
 		let mut t = self.0.lock().await;
 		if !t.writable {
 			return Some(Err(String::from("Readonly")))
 		}
 		match t.state {
-			TxState::Ok => t.alter(self, ware_name, tab_name, meta, cb),
+			TxState::Ok => t.alter(self, ware_name, tab_name, meta).await,
 			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
 		}
 	}
@@ -514,7 +511,7 @@ struct Tx {
 
 impl Tx {
 	// 预提交事务
-	fn prepare(&mut self, tr: &Tr, cb: TxCallback) -> DBResult {
+	fn prepare(&mut self, tr: &Tr) -> DBResult {
 		//如果预提交内容为空，直接返回预提交成功
 		if self.meta_txns.len() == 0 && self.tab_txns.len() == 0 {
 			self.state = TxState::PreparOk;
@@ -536,22 +533,10 @@ impl Tx {
 		}
 		let len = self.tab_txns.len() + alter_len;
 		let count = Arc::new(AtomicUsize::new(len));
-		let c = count.clone();
-		let tr1 = tr.clone();
-		let bf = Arc::new(move |r: SResult<()> | match r {
-			Ok(_) => if c.fetch_sub(1, Ordering::SeqCst) == 1 {
-				if tr1.cs_state(TxState::Preparing, TxState::PreparOk) {
-					cb(Ok(()))
-				}
-			}
-			_ => if tr1.cs_state(TxState::Preparing, TxState::PreparFail) {
-				cb(r)
-			}
-		});
 
 		//处理每个表的预提交
 		for val in self.tab_txns.values_mut() {
-			match val.prepare(self.timeout, bf.clone()) {
+			match val.prepare(self.timeout) {
 				Some(r) => match r {
 					Ok(_) => {
 						if count.fetch_sub(1, Ordering::SeqCst) == 1 {
@@ -569,7 +554,7 @@ impl Tx {
 		}
 		//处理tab alter的预提交
 		for val in self.meta_txns.values_mut() {
-			match val.prepare(self.timeout, bf.clone()) {
+			match val.prepare(self.timeout) {
 				Some(r) => match r {
 					Ok(_) => {
 						if count.fetch_sub(1, Ordering::SeqCst) == 1 {
@@ -588,7 +573,7 @@ impl Tx {
 		None
 	}
 	// 提交事务
-	async fn commit(&mut self, tr: &Tr, cb: TxCallback) -> DBResult {
+	async fn commit(&mut self, tr: &Tr) -> DBResult {
 		self.state = TxState::Committing;
 		// 先提交mgr上的事务
 		let alter_len = self.meta_txns.len();
@@ -604,29 +589,11 @@ impl Tx {
 		// println!(" ======== pi_db::mgr::commit txid: {:?}, alter_len: {:?}, tab_txn_len: {:?}", self.id.time(), alter_len, self.tab_txns.len());
 		let count = Arc::new(AtomicUsize::new(len));
 		let c = count.clone();
-		let tr1 = tr.clone();
-		let txid = self.id.clone();
-		let writable = self.writable;
-		let mgr = self.mgr.clone();
 		let ware_log_map = self.ware_log_map.clone();
-		let bf = Arc::new(move |r: SResult<()> | {
-			match r {
-				Ok(_) => tr1.cs_state(TxState::Committing, TxState::Commited),
-				_ => tr1.cs_state(TxState::Committing, TxState::CommitFail)
-			};
-			if c.fetch_sub(1, Ordering::SeqCst) == 1 {
-				if writable {
-					
-				} else {
-					// 只读事务直接提交
-					cb(Ok(()))
-				}
-			}
-		});
 
 		//处理每个表的提交
 		for (txn_name, val) in self.tab_txns.iter_mut() {
-			match val.commit(bf.clone()) {
+			match val.commit() {
 				Some(r) => {
 					match r {
 						Ok(logs) => {
@@ -652,7 +619,7 @@ impl Tx {
 		}
 		//处理tab alter的提交
 		for val in self.meta_txns.values_mut() {
-			match val.commit(bf.clone()) {
+			match val.commit() {
 				Some(r) => {
 					match r {
 						Ok(_) => (),
@@ -668,7 +635,7 @@ impl Tx {
 		None
 	}
 	// 回滚事务
-	async fn rollback(&mut self, tr: &Tr, cb: TxCallback) -> DBResult {
+	async fn rollback(&mut self, tr: &Tr) -> DBResult {
 		self.state = TxState::Rollbacking;
 		// 先回滚mgr上的事务
 		let alter_len = self.meta_txns.len();
@@ -679,21 +646,10 @@ impl Tx {
 		}
 		let len = self.tab_txns.len() + alter_len;
 		let count = Arc::new(AtomicUsize::new(len));
-		let c = count.clone();
-		let tr1 = tr.clone();
-		let bf = Arc::new(move |r: SResult<()> | {
-			match r {
-				Ok(_) => tr1.cs_state(TxState::Rollbacking, TxState::Rollbacked),
-				_ => tr1.cs_state(TxState::Rollbacking, TxState::RollbackFail)
-			};
-			if c.fetch_sub(1, Ordering::SeqCst) == 1 {
-				cb(Ok(()))
-			}
-		});
-
+		
 		//处理每个表的预提交
 		for val in self.tab_txns.values_mut() {
-			match val.rollback(bf.clone()) {
+			match val.rollback() {
 				Some(r) => {
 					match r {
 						Ok(_) => (),
@@ -708,7 +664,7 @@ impl Tx {
 		}
 		//处理tab alter的预提交
 		for val in self.meta_txns.values_mut() {
-			match val.rollback(bf.clone()) {
+			match val.rollback() {
 				Some(r) => {
 					match r {
 						Ok(_) => (),
@@ -724,45 +680,7 @@ impl Tx {
 		None
 	}
 	// 修改，插入、删除及更新
-	fn key_lock(&mut self, tr: &Tr, arr: Vec<TabKV>, lock_time: usize, read_lock: bool, cb: TxCallback) -> DBResult {
-		if arr.len() == 0 {
-			return Some(Ok(()))
-		}
-		let map = tab_map(arr);
-		self.state = TxState::Doing;
-		let count = Arc::new(AtomicUsize::new(map.len()));
-		let c1 = count.clone();
-		let cb1 = cb.clone();
-		let tr1 = tr.clone();
-		let bf = Arc::new(move |r| {
-			handle_result(r, &tr1, &c1, &cb1)
-		});
-		for ((ware_name, tab_name), val) in map.into_iter() {
-			let tkv = Arc::new(val);
-			let tkv1 = tkv.clone();
-			let bf1 = bf.clone();
-			let c2 = count.clone();
-			let cb2 = cb.clone();
-			let tr2 = tr.clone();
-			match self.build(&ware_name, &tab_name, Box::new(move |r| {
-				match r {
-					Ok(t) => match t.key_lock(tkv1.clone(), lock_time, read_lock, bf1.clone()) {
-						Some(r) => handle_result(r, &tr2, &c2, &cb2),
-						_ => ()
-					},
-					Err(s) => single_result_err(Err(s), &tr2, &cb2)
-				}
-			})) {
-				Some(r) => match r {
-					Ok(t) => match self.handle_result(&count, t.key_lock(tkv, lock_time, read_lock, bf.clone())) {
-						None => (),
-						rr => return rr
-					}
-					Err(s) => return self.single_result_err(Err(s))
-				},
-				_ => ()
-			}
-		}
+	async fn key_lock(&mut self, tr: &Tr, arr: Vec<TabKV>, lock_time: usize, read_lock: bool) -> DBResult {
 		None
 	}
 	// 查询
@@ -771,8 +689,7 @@ impl Tx {
 		tr: &Tr,
 		arr: Vec<TabKV>,
 		lock_time: Option<usize>,
-		read_lock: bool,
-		cb: TxQueryCallback,
+		read_lock: bool
 	) -> Option<SResult<Vec<TabKV>>> {
 		let len = arr.len();
 		if arr.len() == 0 {
@@ -784,32 +701,15 @@ impl Tx {
 		vec.resize(len, Default::default());
 		let rvec = Arc::new(Mutex::new((len, vec)));
 		let c1 = rvec.clone();
-		let cb1 = cb.clone();
-		let tr1 = tr.clone();
-		let bf = Arc::new(move |r| {
-			query_result(r, &tr1, &c1, &cb1)
-		});
+		
 		let map = tab_map(arr);
 		for ((ware_name, tab_name), val) in map.into_iter() {
 			let tkv = Arc::new(val);
 			let tkv1 = tkv.clone();
-			let bf1 = bf.clone();
 			let c2 = rvec.clone();
-			let cb2 = cb.clone();
-			let tr2 = tr.clone();
-			match self.build(&ware_name, &tab_name, Box::new(move |r| match r {
-				Ok(t) => match t.query(tkv1.clone(), lock_time, read_lock, bf1.clone()) {
-					Some(r) => query_result(r, &tr2, &c2, &cb2),
-					_ => ()
-				},
-				Err(s) => {
-					if tr2.cs_state(TxState::Doing, TxState::Err) {
-						(*cb2)(Err(s))
-					}
-				}
-			})) {
+			match self.build(&ware_name, &tab_name).await {
 				Some(r) => match r {
-					Ok(t) => match t.query(tkv, lock_time, read_lock, bf.clone()) {
+					Ok(t) => match t.query(tkv, lock_time, read_lock) {
 						Some(r) => match r {
 							Ok(vec) => {
 								match merge_result(&rvec, vec).await {
@@ -835,7 +735,7 @@ impl Tx {
 		None
 	}
 	// 修改，插入、删除及更新
-	async fn modify(&mut self, tr: &Tr, arr: Vec<TabKV>, lock_time: Option<usize>, read_lock: bool, cb: TxCallback) -> DBResult {
+	async fn modify(&mut self, tr: &Tr, arr: Vec<TabKV>, lock_time: Option<usize>, read_lock: bool) -> DBResult {
 		if arr.len() == 0 {
 			return Some(Ok(()))
 		}
@@ -845,30 +745,14 @@ impl Tx {
 		let map = tab_map(arr);
 		self.state = TxState::Doing;
 		let count = Arc::new(AtomicUsize::new(map.len()));
-		let c1 = count.clone();
-		let cb1 = cb.clone();
-		let tr1 = tr.clone();
-		let bf = Arc::new(move |r| {
-			handle_result(r, &tr1, &c1, &cb1)
-		});
+
 		for ((ware_name, tab_name), val) in map.into_iter() {
 			let tkv = Arc::new(val);
 			let tkv1 = tkv.clone();
-			let bf1 = bf.clone();
 			let c2 = count.clone();
-			let cb2 = cb.clone();
-			let tr2 = tr.clone();
-			match self.build(&ware_name, &tab_name, Box::new(move |r| {
-				match r {
-					Ok(t) => match t.modify(tkv1.clone(), lock_time, read_lock, bf1.clone()) {
-						Some(r) => handle_result(r, &tr2, &c2, &cb2),
-						_ => ()
-					},
-					Err(s) => single_result_err(Err(s), &tr2, &cb2)
-				}
-			})) {
+			match self.build(&ware_name, &tab_name).await {
 				Some(r) => match r {
-					Ok(t) => match self.handle_result(&count, t.modify(tkv, lock_time, read_lock, bf.clone())) {
+					Ok(t) => match self.handle_result(&count, t.modify(tkv, lock_time, read_lock)) {
 						None => (),
 						rr => return rr
 					}
@@ -880,32 +764,18 @@ impl Tx {
 		None
 	}
 	// 迭代
-	fn iter(&mut self, tr: &Tr, ware: &Atom, tab: &Atom, key: Option<Bin>, descending: bool, filter: Filter, cb: Arc<dyn Fn(IterResult)>) -> Option<IterResult> {
+	async fn iter(&mut self, tr: &Tr, ware: &Atom, tab: &Atom, key: Option<Bin>, descending: bool, filter: Filter) -> Option<IterResult> {
 		let tr1 = tr.clone();
 		let tr2 = tr.clone();
 		let key1 = key.clone();
 		let filter1 = filter.clone();
-		let cb1 = cb.clone();
-		let bf = Arc::new(move |r| {
-			iter_result(r, &tr1, &cb1)
-		});
-		let bf1 = bf.clone();
+
 		self.state = TxState::Doing;
 		let tab_clone1 = tab.clone();
 		let tab_clone2 = tab.clone();
-		match self.build(&ware, &tab, Box::new(move |r| {
-			match r {
-				Ok(t) => match t.iter(&tab_clone1, key1.clone(), descending, filter1.clone(), bf1.clone()) {
-					Some(r) => iter_result(r, &tr2, &cb),
-					_ => ()
-				},
-				Err(s) => if tr2.cs_state(TxState::Doing, TxState::Err) {
-					cb(Err(s))
-				}
-			}
-		})) {
+		match self.build(&ware, &tab).await {
 			Some(r) => match r {
-				Ok(t) => self.iter_result(t.iter(&tab_clone2, key, descending, filter, bf)),
+				Ok(t) => self.iter_result(t.iter(&tab_clone2, key, descending, filter)),
 				Err(s) => {
 					self.state = TxState::Err;
 					Some(Err(s))
@@ -915,30 +785,11 @@ impl Tx {
 		}
 	}
 	// 迭代
-	fn key_iter(&mut self, tr: &Tr, ware: &Atom, tab: &Atom, key: Option<Bin>, descending: bool, filter: Filter, cb: Arc<dyn Fn(KeyIterResult)>) -> Option<KeyIterResult> {
-		let tr1 = tr.clone();
-		let tr2 = tr.clone();
-		let key1 = key.clone();
-		let filter1 = filter.clone();
-		let cb1 = cb.clone();
-		let bf = Arc::new(move |r| {
-			iter_result(r, &tr1, &cb1)
-		});
-		let bf1 = bf.clone();
+	async fn key_iter(&mut self, tr: &Tr, ware: &Atom, tab: &Atom, key: Option<Bin>, descending: bool, filter: Filter) -> Option<KeyIterResult> {
 		self.state = TxState::Doing;
-		match self.build(&ware, &tab, Box::new(move |r| {
-			match r {
-				Ok(t) => match t.key_iter(key1.clone(), descending, filter1.clone(), bf1.clone()) {
-					Some(r) => iter_result(r, &tr2, &cb),
-					_ => ()
-				},
-				Err(s) => if tr2.cs_state(TxState::Doing, TxState::Err) {
-					cb(Err(s))
-				}
-			}
-		})) {
+		match self.build(&ware, &tab).await {
 			Some(r) => match r {
-				Ok(t) => self.iter_result(t.key_iter(key, descending, filter, bf)),
+				Ok(t) => self.iter_result(t.key_iter(key, descending, filter)),
 				Err(s) => {
 					self.state = TxState::Err;
 					Some(Err(s))
@@ -948,26 +799,11 @@ impl Tx {
 		}
 	}
 	// 表的大小
-	fn tab_size(&mut self, tr: &Tr, ware_name: &Atom, tab_name: &Atom, cb: Arc<dyn Fn(SResult<usize>)>) -> Option<SResult<usize>> {
+	async fn tab_size(&mut self, tr: &Tr, ware_name: &Atom, tab_name: &Atom) -> Option<SResult<usize>> {
 		self.state = TxState::Doing;
-		let cb1 = cb.clone();
-		let tr1 = tr.clone();
-		let bf = Arc::new(move |r| {
-			single_result(r, &tr1, &cb1)
-		});
-		let bf1 = bf.clone();
-		let tr2 = tr.clone();
-		match self.build(ware_name, tab_name, Box::new(move |r| {
-			match r {
-				Ok(t) => match t.tab_size(bf1.clone()) {
-					Some(r) => single_result(r, &tr2, &cb),
-					_ => ()
-				},
-				Err(s) => single_result_err(Err(s), &tr2, &cb)
-			}
-		})) {
+		match self.build(ware_name, tab_name).await {
 			Some(r) => match r {
-				Ok(t) => match self.single_result(t.tab_size(bf)) {
+				Ok(t) => match self.single_result(t.tab_size()) {
 					None => (),
 					rr => return rr
 				}
@@ -978,7 +814,7 @@ impl Tx {
 		None
 	}
 	// 新增 修改 删除 表
-	fn alter(&mut self, tr: &Tr, ware_name: &Atom, tab_name: &Atom, meta: Option<Arc<TabMeta>>, cb: TxCallback) -> DBResult {
+	async fn alter(&mut self, tr: &Tr, ware_name: &Atom, tab_name: &Atom, meta: Option<Arc<TabMeta>>) -> DBResult {
 		self.state = TxState::Doing;
 		let ware = match self.ware_log_map.get(ware_name) {
 			Some(w) => match w.check(tab_name, &meta) { // 检查
@@ -998,7 +834,7 @@ impl Tx {
 		let bf = Arc::new(move |r| {
 			single_result(r, &tr1, &cb)
 		});
-		self.single_result(txn.alter(tab_name, meta, bf))
+		self.single_result(txn.alter(tab_name, meta))
 	}
 	// 表改名
 	fn rename(&mut self, _tr: &Tr, _ware_name: &Atom, _old_name: &Atom, _new_name: Atom, _cb: TxCallback) -> DBResult {
@@ -1007,13 +843,13 @@ impl Tx {
 		None
 	}
 	// 创建表
-	fn build(&mut self, ware_name: &Atom, tab_name: &Atom, cb: Box<dyn Fn(SResult<Arc<dyn TabTxn>>)>) -> Option<SResult<Arc<dyn TabTxn>>> {
+	async fn build(&mut self, ware_name: &Atom, tab_name: &Atom) -> Option<SResult<Arc<dyn TabTxn>>> {
 		//let txn_key = Atom::from(String::from((*ware_name).as_str()) + "##" + tab_name.as_str());
 		let txn_key = (ware_name.clone(), tab_name.clone());
 		let txn = match self.tab_txns.get(&txn_key) {
 			Some(r) => return Some(Ok(r.clone())),
 			_ => match self.ware_log_map.get(ware_name) {
-				Some(ware) => match ware.tab_txn(tab_name, &self.id, self.writable, cb) {
+				Some(ware) => match ware.tab_txn(tab_name, &self.id, self.writable) {
 					Some(r) => match r {
 						Ok(txn) => txn,
 						err => {
