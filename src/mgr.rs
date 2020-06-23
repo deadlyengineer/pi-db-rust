@@ -4,7 +4,7 @@
 
 
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender, TrySendError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::mem;
 
@@ -21,6 +21,7 @@ use sinfo::EnumType;
 use guid::{Guid, GuidGen};
 
 use crate::db::{SResult, DBResult, IterResult, KeyIterResult, Filter, TabKV, TxCallback, TxQueryCallback, TxState, MetaTxn, TabTxn, Event, EventType, Ware, WareSnapshot, Bin, RwLog, TabMeta};
+use r#async::lock::mutex_lock::Mutex;
 
 pub struct CommitChan(pub Guid, pub Sender<Arc<Vec<TabKV>>>);
 
@@ -48,12 +49,6 @@ pub struct Mgr(Arc<Mutex<WareMap>>, Arc<GuidGen>, Statistics);
 unsafe impl Send for Mgr {}
 unsafe impl Sync for Mgr {}
 
-impl fmt::Debug for Mgr {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "({:?}, {:?}, {:?})", self.0, self.1, self.2)
-	}
-}
-
 impl Mgr {
 	/**
 	* 构建表库及事务管理器管理器
@@ -64,9 +59,9 @@ impl Mgr {
 		Mgr(Arc::new(Mutex::new(WareMap::new())), Arc::new(gen), Statistics::new())
 	}
 	// 浅拷贝，库表不同，共用同一个统计信息和GuidGen
-	pub fn shallow_clone(&self) -> Self {
+	pub async fn shallow_clone(&self) -> Self {
 		// TODO 拷库表
-		Mgr(Arc::new(Mutex::new(self.0.lock().unwrap().wares_clone())), self.1.clone(), self.2.clone())
+		Mgr(Arc::new(Mutex::new(self.0.lock().await.wares_clone())), self.1.clone(), self.2.clone())
 	}
 	// 深拷贝，库表及统计信息不同
 	pub fn deep_clone(&self, clone_guid_gen: bool) -> Self {
@@ -78,12 +73,12 @@ impl Mgr {
 		Mgr(Arc::new(Mutex::new(WareMap::new())), gen, self.2.clone())
 	}
 	// 注册库
-	pub fn register(&self, ware_name: Atom, ware: Arc<dyn Ware>) -> bool {
-		self.0.lock().unwrap().register(ware_name, ware)
+	pub async fn register(&self, ware_name: Atom, ware: Arc<dyn Ware>) -> bool {
+		self.0.lock().await.register(ware_name, ware)
 	}
 	// 取消注册数据库
-	pub fn unregister(&mut self, ware_name: &Atom) -> bool {
-		self.0.lock().unwrap().unregister(ware_name)
+	pub async fn unregister(&mut self, ware_name: &Atom) -> bool {
+		self.0.lock().await.unregister(ware_name)
 	}
 	/**
 	* 获取表的元信息
@@ -91,8 +86,8 @@ impl Mgr {
 	* @param tab_name 表名
 	* @returns 返回表的元信息
 	*/
-	pub fn tab_info(&self, ware_name:&Atom, tab_name: &Atom) -> Option<Arc<TabMeta>> {
-		match self.find(ware_name) {
+	pub async fn tab_info(&self, ware_name:&Atom, tab_name: &Atom) -> Option<Arc<TabMeta>> {
+		match self.find(ware_name).await {
 			Some(b) => b.tab_info(tab_name),
 			_ => None
 		}
@@ -102,11 +97,11 @@ impl Mgr {
 	* @param writable 是否为写事务
 	* @returns 返回事务
 	*/
-	pub fn transaction(&self, writable: bool) -> Tr {		
+	pub async fn transaction(&self, writable: bool) -> Tr {		
 		let id = self.1.gen(0);
 		self.2.acount.fetch_add(1, Ordering::SeqCst);
 		let ware_map = {
-			self.0.lock().unwrap().clone()
+			self.0.lock().await.clone()
 		};
 
 		let mut map = FnvHashMap::with_capacity_and_hasher(ware_map.0.size() * 3 / 2, Default::default());
@@ -126,9 +121,9 @@ impl Mgr {
 		})))
 	}
 
-	pub fn ware_name_list(&self) -> Vec<String> {
+	pub async fn ware_name_list(&self) -> Vec<String> {
 		let mut arr = Vec::new();
-		let lock = self.0.lock().unwrap();
+		let lock = self.0.lock().await;
 		let mut iter = lock.keys(None, false);
 		loop {
 			match iter.next() {
@@ -140,9 +135,9 @@ impl Mgr {
 	}
 
 	// 寻找指定的库
-	pub fn find(&self, ware_name: &Atom) -> Option<Arc<dyn Ware>> {
+	pub async fn find(&self, ware_name: &Atom) -> Option<Arc<dyn Ware>> {
 		let map = {
-			self.0.lock().unwrap().clone()
+			self.0.lock().await.clone()
 		};
 		map.find(ware_name)
 	}
@@ -181,24 +176,24 @@ pub struct Tr(Arc<Mutex<Tx>>);
 
 impl Tr {
 	// 判断事务是否可写
-	pub fn is_writable(&self) -> bool {
-		self.0.lock().unwrap().writable
+	pub async fn is_writable(&self) -> bool {
+		self.0.lock().await.writable
 	}
 	// 获得事务的超时时间
-	pub fn get_timeout(&self) -> usize {
-		self.0.lock().unwrap().timeout
+	pub async fn get_timeout(&self) -> usize {
+		self.0.lock().await.timeout
 	}
 	// 获得事务的状态
-	pub fn get_state(&self) -> TxState {
-		self.0.lock().unwrap().state.clone()
+	pub async fn get_state(&self) -> TxState {
+		self.0.lock().await.state.clone()
 	}
 	/**
 	* 预提交一个事务
 	* @param cb 预提交回调
 	* @returns 返回预提交结果
 	*/
-	pub fn prepare(&self, cb: TxCallback) -> DBResult {
-		let mut t = self.0.lock().unwrap();
+	pub async fn prepare(&self, cb: TxCallback) -> DBResult {
+		let mut t = self.0.lock().await;
 		match t.state {
 			TxState::Ok => t.prepare(self, cb),
 			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
@@ -209,10 +204,10 @@ impl Tr {
 	* @param cb 提交回调
 	* @returns 返回提交结果
 	*/
-	pub fn commit(&self, cb: TxCallback) -> DBResult {
-		let mut t = self.0.lock().unwrap();
+	pub async fn commit(&self, cb: TxCallback) -> DBResult {
+		let mut t = self.0.lock().await;
 		match t.state {
-			TxState::PreparOk => t.commit(self, cb),
+			TxState::PreparOk => t.commit(self, cb).await,
 			_ => Some(Err(String::from("InvalidState, expect:TxState::PreparOk, found:") + t.state.to_string().as_str())),
 		}
 	}
@@ -221,17 +216,17 @@ impl Tr {
 	* @param cb 回滚回调
 	* @returns 返回回滚结果
 	*/
-	pub fn rollback(&self, cb: TxCallback) -> DBResult {
-		let mut t = self.0.lock().unwrap();
+	pub async fn rollback(&self, cb: TxCallback) -> DBResult {
+		let mut t = self.0.lock().await;
 		match t.state {
 			TxState::Committing|TxState::Commited|TxState::CommitFail|TxState::Rollbacking|TxState::Rollbacked|TxState::RollbackFail =>
 				return Some(Err(String::from("InvalidState, expect:TxState::Committing | TxState::Commited| TxState::CommitFail| TxState::Rollbacking| TxState::Rollbacked| TxState::RollbackFail, found:") + t.state.to_string().as_str())),
-			_ => t.rollback(self, cb)
+			_ => t.rollback(self, cb).await
 		}
 	}
 	// 锁
-	pub fn key_lock(&self, arr: Vec<TabKV>, lock_time: usize, read_lock: bool, cb: TxCallback) -> DBResult {
-		let mut t = self.0.lock().unwrap();
+	pub async fn key_lock(&self, arr: Vec<TabKV>, lock_time: usize, read_lock: bool, cb: TxCallback) -> DBResult {
+		let mut t = self.0.lock().await;
 		match t.state {
 			TxState::Ok => t.key_lock(self, arr, lock_time, read_lock, cb),
 			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
@@ -245,16 +240,16 @@ impl Tr {
 	* @param cb 查询回调
 	* @returns 查询结果
 	*/
-	pub fn query(
+	pub async fn query(
 		&self,
 		arr: Vec<TabKV>,
 		lock_time: Option<usize>,
 		read_lock: bool,
 		cb: TxQueryCallback,
 	) -> Option<SResult<Vec<TabKV>>> {
-		let mut t = self.0.lock().unwrap();
+		let mut t = self.0.lock().await;
 		match t.state {
-			TxState::Ok => t.query(self, arr, lock_time, read_lock, cb),
+			TxState::Ok => t.query(self, arr, lock_time, read_lock, cb).await,
 			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
 		}
 	}
@@ -266,13 +261,13 @@ impl Tr {
 	* @param cb 修改回调
 	* @returns 修改结果
 	*/
-	pub fn modify(&self, arr: Vec<TabKV>, lock_time: Option<usize>, read_lock: bool, cb: TxCallback) -> DBResult {
-		let mut t = self.0.lock().unwrap();
+	pub async fn modify(&self, arr: Vec<TabKV>, lock_time: Option<usize>, read_lock: bool, cb: TxCallback) -> DBResult {
+		let mut t = self.0.lock().await;
 		if !t.writable {
 			return Some(Err(String::from("Readonly")))
 		}
 		match t.state {
-			TxState::Ok => t.modify(self, arr, lock_time, read_lock, cb),
+			TxState::Ok => t.modify(self, arr, lock_time, read_lock, cb).await,
 			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
 		}
 	}
@@ -289,7 +284,7 @@ impl Tr {
 		None
 	}
 	// 迭代
-	pub fn iter(
+	pub async fn iter(
 		&self,
 		ware: &Atom,
 		tab: &Atom,
@@ -298,14 +293,14 @@ impl Tr {
 		filter: Filter,
 		cb: Arc<dyn Fn(IterResult)>,
 	) -> Option<IterResult> {
-		let mut t = self.0.lock().unwrap();
+		let mut t = self.0.lock().await;
 		match t.state {
 			TxState::Ok => t.iter(self, ware, tab, key, descending, filter, cb),
 			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
 		}
 	}
 	// 键迭代
-	pub fn key_iter(
+	pub async fn key_iter(
 		&self,
 		ware: &Atom,
 		tab: &Atom,
@@ -314,7 +309,7 @@ impl Tr {
 		filter: Filter,
 		cb: Arc<dyn Fn(KeyIterResult)>,
 	) -> Option<KeyIterResult> {
-		let mut t = self.0.lock().unwrap();
+		let mut t = self.0.lock().await;
 		match t.state {
 			TxState::Ok => t.key_iter(self, ware, tab, key, descending, filter, cb),
 			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
@@ -333,8 +328,8 @@ impl Tr {
 		None
 	}
 	// 列出指定库的所有表
-	pub fn list(&self, ware_name: &Atom) -> Option<Vec<String>> {
-		match self.0.lock().unwrap().ware_log_map.get(ware_name) {
+	pub async fn list(&self, ware_name: &Atom) -> Option<Vec<String>> {
+		match self.0.lock().await.ware_log_map.get(ware_name) {
 			Some(ware) => {
 				let mut arr = Vec::new();
 				for e in ware.list(){
@@ -346,15 +341,15 @@ impl Tr {
 		}
 	}
 	// 表的元信息
-	pub fn tab_info(&self, ware_name:&Atom, tab_name: &Atom) -> Option<Arc<TabMeta>> {
-		match self.0.lock().unwrap().ware_log_map.get(ware_name) {
+	pub async fn tab_info(&self, ware_name:&Atom, tab_name: &Atom) -> Option<Arc<TabMeta>> {
+		match self.0.lock().await.ware_log_map.get(ware_name) {
 			Some(ware) => ware.tab_info(tab_name),
 			_ => None
 		}
 	}
 	// 表的大小
-	pub fn tab_size(&self, ware_name:&Atom, tab_name: &Atom, cb: Arc<dyn Fn(SResult<usize>)>) -> Option<SResult<usize>> {
-		let mut t = self.0.lock().unwrap();
+	pub async fn tab_size(&self, ware_name:&Atom, tab_name: &Atom, cb: Arc<dyn Fn(SResult<usize>)>) -> Option<SResult<usize>> {
+		let mut t = self.0.lock().await;
 		match t.state {
 			TxState::Ok => t.tab_size(self, ware_name, tab_name, cb),
 			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
@@ -368,8 +363,8 @@ impl Tr {
 	* @param cb 更新回调
 	* @returns 返回更新结果
 	*/
-	pub fn alter(&self, ware_name:&Atom, tab_name: &Atom, meta: Option<Arc<TabMeta>>, cb: TxCallback) -> DBResult {
-		let mut t = self.0.lock().unwrap();
+	pub async fn alter(&self, ware_name:&Atom, tab_name: &Atom, meta: Option<Arc<TabMeta>>, cb: TxCallback) -> DBResult {
+		let mut t = self.0.lock().await;
 		if !t.writable {
 			return Some(Err(String::from("Readonly")))
 		}
@@ -379,8 +374,8 @@ impl Tr {
 		}
 	}
 	// 表改名
-	pub fn rename(&self, ware_name:&Atom, old_name: &Atom, new_name: Atom, cb: TxCallback) -> DBResult {
-		let mut t = self.0.lock().unwrap();
+	pub async fn rename(&self, ware_name:&Atom, old_name: &Atom, new_name: Atom, cb: TxCallback) -> DBResult {
+		let mut t = self.0.lock().await;
 		if !t.writable {
 			return Some(Err(String::from("Readonly")))
 		}
@@ -594,7 +589,7 @@ impl Tx {
 		None
 	}
 	// 提交事务
-	fn commit(&mut self, tr: &Tr, cb: TxCallback) -> DBResult {
+	async fn commit(&mut self, tr: &Tr, cb: TxCallback) -> DBResult {
 		self.state = TxState::Committing;
 		// 先提交mgr上的事务
 		let alter_len = self.meta_txns.len();
@@ -684,7 +679,7 @@ impl Tx {
 		None
 	}
 	// 回滚事务
-	fn rollback(&mut self, tr: &Tr, cb: TxCallback) -> DBResult {
+	async fn rollback(&mut self, tr: &Tr, cb: TxCallback) -> DBResult {
 		self.state = TxState::Rollbacking;
 		// 先回滚mgr上的事务
 		let alter_len = self.meta_txns.len();
@@ -738,7 +733,7 @@ impl Tx {
 			}
 		}
 		// 清理缓存
-		MODS.lock().unwrap().remove(&self.id.time());
+		MODS.lock().await.remove(&self.id.time());
 
 		None
 	}
@@ -785,7 +780,7 @@ impl Tx {
 		None
 	}
 	// 查询
-	fn query(
+	async fn query(
 		&mut self,
 		tr: &Tr,
 		arr: Vec<TabKV>,
@@ -831,7 +826,7 @@ impl Tx {
 					Ok(t) => match t.query(tkv, lock_time, read_lock, bf.clone()) {
 						Some(r) => match r {
 							Ok(vec) => {
-								match merge_result(&rvec, vec) {
+								match merge_result(&rvec, vec).await {
 									None => (),
 									rr => {
 										self.state = TxState::Ok;
@@ -854,14 +849,14 @@ impl Tx {
 		None
 	}
 	// 修改，插入、删除及更新
-	fn modify(&mut self, tr: &Tr, arr: Vec<TabKV>, lock_time: Option<usize>, read_lock: bool, cb: TxCallback) -> DBResult {
+	async fn modify(&mut self, tr: &Tr, arr: Vec<TabKV>, lock_time: Option<usize>, read_lock: bool, cb: TxCallback) -> DBResult {
 		if arr.len() == 0 {
 			return Some(Ok(()))
 		}
 
 		// 保存每个txid的修改
 		let data = arr.iter().cloned().collect::<Vec<TabKV>>();
-		MODS.lock().unwrap().entry(self.id.time()).and_modify(|v| {
+		MODS.lock().await.entry(self.id.time()).and_modify(|v| {
 			v.extend(data.clone());
 		}).or_insert(data);
 
@@ -1131,8 +1126,8 @@ fn tab_map(mut arr: Vec<TabKV>) -> FnvHashMap<(Atom, Atom), Vec<TabKV>> {
 
 // 合并结果集
 #[inline]
-fn merge_result(rvec: &Arc<Mutex<(usize, Vec<TabKV>)>>, vec: Vec<TabKV>) -> Option<SResult<Vec<TabKV>>> {
-	let mut t = rvec.lock().unwrap();
+async fn merge_result(rvec: &Arc<Mutex<(usize, Vec<TabKV>)>>, vec: Vec<TabKV>) -> Option<SResult<Vec<TabKV>>> {
+	let mut t = rvec.lock().await;
 	t.0 -= vec.len();
 	for r in vec.into_iter() {
 		let i = (&r).index - 1;
@@ -1146,10 +1141,10 @@ fn merge_result(rvec: &Arc<Mutex<(usize, Vec<TabKV>)>>, vec: Vec<TabKV>) -> Opti
 }
 // 处理异步返回的查询结果
 #[inline]
-fn query_result(r: SResult<Vec<TabKV>>, tr: &Tr, rvec: &Arc<Mutex<(usize, Vec<TabKV>)>>, cb: &TxQueryCallback) {
+async fn query_result(r: SResult<Vec<TabKV>>, tr: &Tr, rvec: &Arc<Mutex<(usize, Vec<TabKV>)>>, cb: &TxQueryCallback) {
 	match r {
 		Ok(vec) => {
-			match merge_result(rvec, vec) {
+			match merge_result(rvec, vec).await {
 				Some(rr) => if tr.cs_state(TxState::Doing, TxState::Ok) {
 					cb(rr)
 				}
