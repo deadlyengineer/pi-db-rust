@@ -154,33 +154,33 @@ impl DB {
 	}
 	// 获取当前表结构快照
 	pub async fn snapshot(&self) -> Arc<DBSnapshot> {
-		Arc::new(DBSnapshot(self.clone(), RefCell::new(self.0.read().await.snapshot())))
+		Arc::new(DBSnapshot(self.clone(), Mutex::new(self.0.read().await.snapshot())))
 	}
 }
 
 // 内存库快照
-pub struct DBSnapshot(DB, RefCell<TabLog>);
+pub struct DBSnapshot(DB, Mutex<TabLog>);
 
 impl DBSnapshot {
 	// 列出全部的表
-	pub fn list(&self) -> Box<dyn Iterator<Item=Atom>> {
-		Box::new(self.1.borrow().list())
+	pub async fn list(&self) -> Box<dyn Iterator<Item=Atom>> {
+		Box::new(self.1.lock().await.list())
 	}
 	// 表的元信息
-	pub fn tab_info(&self, tab_name: &Atom) -> Option<Arc<TabMeta>> {
-		self.1.borrow().get(tab_name)
+	pub async fn tab_info(&self, tab_name: &Atom) -> Option<Arc<TabMeta>> {
+		self.1.lock().await.get(tab_name)
 	}
 	// 检查该表是否可以创建
 	pub fn check(&self, _tab: &Atom, _meta: &Option<Arc<TabMeta>>) -> SResult<()> {
 		Ok(())
 	}
 	// 新增 修改 删除 表
-	pub fn alter(&self, tab_name: &Atom, meta: Option<Arc<TabMeta>>) {
-		self.1.borrow_mut().alter(tab_name, meta)
+	pub async fn alter(&self, tab_name: &Atom, meta: Option<Arc<TabMeta>>) {
+		self.1.lock().await.alter(tab_name, meta)
 	}
 	// 创建指定表的表事务
 	pub async fn tab_txn(&self, tab_name: &Atom, id: &Guid, writable: bool) -> Option<SResult<Arc<RefMemeryTxn>>> {
-		self.1.borrow().build(BuildDbType::MemoryDB, tab_name, id, writable).await
+		self.1.lock().await.build(BuildDbType::MemoryDB, tab_name, id, writable).await
 	}
 	// 创建一个meta事务
 	pub fn meta_txn(&self, _id: &Guid) -> Arc<MemeryMetaTxn> {
@@ -188,7 +188,7 @@ impl DBSnapshot {
 	}
 	// 元信息的预提交
 	pub async fn prepare(&self, id: &Guid) -> SResult<()>{
-		(self.0).0.write().await.prepare(id, &mut self.1.borrow_mut())
+		(self.0).0.write().await.prepare(id, &mut *self.1.lock().await)
 	}
 	// 元信息的提交
 	pub async fn commit(&self, id: &Guid){
@@ -682,9 +682,11 @@ impl MemeryMetaTxn {
 mod tests {
 	use crate::mgr::{ DatabaseWare, Mgr };
 	use atom::Atom;
+	use sinfo;
 	use super::*;
 	use guid::{Guid, GuidGen};
 	use r#async::rt::multi_thread::{MultiTaskPool, MultiTaskRuntime};
+	use crate::db::TabMeta;
 
 	#[test]
 	fn it_works() {
@@ -695,7 +697,11 @@ mod tests {
 			let mgr = Mgr::new(GuidGen::new(0, 0));
 			let ware = DatabaseWare::new_memware(DB::new());
 			let _ = mgr.register(Atom::from("memory"), Arc::new(ware));
-			let tr = mgr.transaction(true);
+			let tr = mgr.transaction(true).await;
+			// let meta = TabMeta::new(sinfo::EnumType::Str, sinfo::EnumType::Str);
+			// tr.alter(&Atom::from("memory"), &Atom::from("hello"), Some(Arc::new(meta))).await;
+			// tr.prepare().await;
+			// tr.commit().await;
 		});
 	}
 }

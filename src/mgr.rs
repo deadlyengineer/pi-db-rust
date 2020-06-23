@@ -327,7 +327,7 @@ impl Tr {
 		match self.0.lock().await.ware_log_map.get(ware_name) {
 			Some(ware) => {
 				let mut arr = Vec::new();
-				for e in ware.list(){
+				for e in ware.list().await {
 					arr.push(e.to_string())
 				}
 				Some(arr)
@@ -338,7 +338,7 @@ impl Tr {
 	// 表的元信息
 	pub async fn tab_info(&self, ware_name:&Atom, tab_name: &Atom) -> Option<Arc<TabMeta>> {
 		match self.0.lock().await.ware_log_map.get(ware_name) {
-			Some(ware) => ware.tab_info(tab_name),
+			Some(ware) => ware.tab_info(tab_name).await,
 			_ => None
 		}
 	}
@@ -403,18 +403,18 @@ impl DatabaseWareSnapshot {
 		DatabaseWareSnapshot::MemSnapshot(Arc::new(snapshot))
 	}
 
-	pub fn list(&self) -> Box<dyn Iterator<Item=Atom>> {
+	pub async fn list(&self) -> Box<dyn Iterator<Item=Atom>> {
 		match self {
 			DatabaseWareSnapshot::MemSnapshot(shot) => {
-				shot.list()
+				shot.list().await
 			}
 		}
 	}
 
-	pub fn tab_info(&self, tab_name: &Atom) -> Option<Arc<TabMeta>> {
+	pub async fn tab_info(&self, tab_name: &Atom) -> Option<Arc<TabMeta>> {
 		match self {
 			DatabaseWareSnapshot::MemSnapshot(shot) => {
-				shot.tab_info(tab_name)
+				shot.tab_info(tab_name).await
 			}
 		}
 	}
@@ -427,10 +427,10 @@ impl DatabaseWareSnapshot {
 		}
 	}
 
-	pub fn alter(&self, tab_name: &Atom, meta: Option<Arc<TabMeta>>) {
+	pub async fn alter(&self, tab_name: &Atom, meta: Option<Arc<TabMeta>>) {
 		match self {
 			DatabaseWareSnapshot::MemSnapshot(shot) => {
-				shot.alter(tab_name, meta)
+				shot.alter(tab_name, meta).await
 			}
 		}
 	}
