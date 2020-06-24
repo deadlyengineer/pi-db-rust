@@ -13,12 +13,15 @@ use atom::Atom;
 use guid::Guid;
 
 use crate::db::{SResult, Tab, TabTxn, Bin, RwLog, TabMeta, BuildDbType};
-use crate::memery_db::DB as MemoryDB;
+use crate::memery_db::MemDB;
 use crate::memery_db::{ MTab, RefMemeryTxn };
+use crate::log_file_db::{LogFileTab, RefLogFileTxn};
+use crate::log_file_db::LogFileDB;
 use r#async::lock::mutex_lock::Mutex;
 
 pub enum TxnType {
-	MemTxn(Arc<RefMemeryTxn>)
+	MemTxn(Arc<RefMemeryTxn>),
+	LogFileTxn(Arc<RefLogFileTxn>)
 }
 // 表结构及修改日志
 pub struct TabLog {
@@ -94,12 +97,12 @@ impl TabLog {
 							if *vec {// 第一次调用
 								match ware {
 									BuildDbType::MemoryDB => {
-										match MemoryDB::open(tab_name).await {
+										match MemDB::open(tab_name).await {
 											Some(r) => {// 同步返回，设置结果
 												if let Ok(t) = r {
-													var.mem_tab = Some(t);
+													var.tab_type = TabType::MemTab(t);
 													var.wait = None;
-													var.mem_tab.clone()
+													var.tab_type.clone()
 												} else {
 													return Some(Err(String::from("memdb open error")))
 												}
@@ -110,24 +113,41 @@ impl TabLog {
 											}
 										}
 									}
+									BuildDbType::LogFileDB => {
+										match LogFileDB::open(tab_name).await {
+											Some(r) => {
+												if let Ok(t) = r {
+													var.tab_type = TabType::LogFileTab(t);
+													var.wait = None;
+													var.tab_type.clone()
+												} else {
+													return Some(Err(String::from("log file db open error")))
+												}
+											}
+											_ => {
+												return None
+											}
+										}
+									}
 								}
 							} else { // 异步的第n次调用，直接返回
 								return None
 							}
 						},
 						_ => {
-							match ware {
-								BuildDbType::MemoryDB => {
-									var.mem_tab.clone()
-								}
-							}
+							var.tab_type.clone()
 						}
 					}
 				};
 				// 根据结果创建事务或返回错误
 				match tab {
-					Some(tab) => Some(Ok(TxnType::MemTxn(Arc::new(tab.transaction(&id, writable).await)))),
-					None => Some(Err(String::from("create tx error")))
+					TabType::MemTab(t) => {
+						Some(Ok(TxnType::MemTxn(Arc::new(t.transaction(&id, writable).await))))
+					}
+					TabType::LogFileTab(t) => {
+						Some(Ok(TxnType::LogFileTxn(Arc::new(t.transaction(&id, writable).await))))
+					}
+					TabType::Unkonwn => Some(Err(String::from("unknown tab type")))
 				}
 			},
 			_ => {Some(Err(String::from("TabNotFound: ") + (*tab_name).as_str()))}
@@ -332,9 +352,7 @@ impl TabInfo {
 		TabInfo{
 			meta: meta,
 			init: Arc::new(Mutex::new(TabInit {
-				mem_tab: None,
-				file_mem_tab: None,
-				log_file_tab: None,
+				tab_type: TabType::Unkonwn,
 				wait:Some(true),
 			})),
 		}
@@ -342,8 +360,13 @@ impl TabInfo {
 }
 // 表初始化
 struct TabInit {
-	mem_tab: Option<MTab>,
-	file_mem_tab: Option<MTab>,
-	log_file_tab: Option<MTab>,
+	tab_type: TabType,
 	wait: Option<bool>, // 为None表示tab已经加载
+}
+
+#[derive(Clone)]
+enum TabType {
+	Unkonwn,
+	MemTab(MTab),
+	LogFileTab(LogFileTab)
 }

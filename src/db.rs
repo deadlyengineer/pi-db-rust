@@ -209,6 +209,7 @@ pub trait WareSnapshot {
 	fn notify(&self, event: Event);
 }
 
+#[repr(u8)]
 #[derive(Clone, Debug)]
 pub enum TxState {
 	Ok = 1,
@@ -341,4 +342,5 @@ impl Ord for Bon{
 
 pub enum BuildDbType {
 	MemoryDB,
+	LogFileDB,
 }

@@ -22,8 +22,9 @@ use guid::{Guid, GuidGen};
 
 use crate::db::{SResult, DBResult, IterResult, KeyIterResult, Filter, TabKV, TxCallback, TxQueryCallback, TxState, MetaTxn, TabTxn, Event, EventType, Ware, WareSnapshot, Bin, RwLog, TabMeta, CommitResult};
 use r#async::lock::mutex_lock::Mutex;
-use crate::memery_db::{DBSnapshot, DB, RefMemeryTxn, MemeryMetaTxn};
+use crate::memery_db::{MemDBSnapshot, MemDB, RefMemeryTxn, MemeryMetaTxn};
 use crate::tabs::TxnType;
+use crate::log_file_db::{LogFileDBSnapshot, RefLogFileTxn, LogFileMetaTxn, LogFileDB};
 
 pub struct CommitChan(pub Guid, pub Sender<Arc<Vec<TabKV>>>);
 
@@ -115,16 +116,15 @@ impl Mgr {
 			map.insert(k, v.snapshot().await);
 		}
 
-		Tr(Arc::new(Mutex::new(Tx {
+		Tr {
 			writable,
 			timeout: TIMEOUT,
 			id: id.clone(),
 			ware_log_map: map,
 			state: TxState::Ok,
-			_timer_ref: 0,
 			tab_txns: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
 			meta_txns: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
-		})))
+		}
 	}
 
 	pub async fn ware_name_list(&self) -> Vec<String> {
@@ -174,220 +174,6 @@ impl Statistics {
 	}
 }
 
-/**
-* 事务
-*/
-#[derive(Clone)]
-pub struct Tr(Arc<Mutex<Tx>>);
-
-impl Tr {
-	// 判断事务是否可写
-	pub async fn is_writable(&self) -> bool {
-		self.0.lock().await.writable
-	}
-	// 获得事务的超时时间
-	pub async fn get_timeout(&self) -> usize {
-		self.0.lock().await.timeout
-	}
-	// 获得事务的状态
-	pub async fn get_state(&self) -> TxState {
-		self.0.lock().await.state.clone()
-	}
-	/**
-	* 预提交一个事务
-	* @param cb 预提交回调
-	* @returns 返回预提交结果
-	*/
-	pub async fn prepare(&self) -> DBResult {
-		let mut t = self.0.lock().await;
-		match t.state {
-			TxState::Ok => t.prepare().await,
-			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
-		}
-	}
-	/**
-	* 提交一个事务
-	* @param cb 提交回调
-	* @returns 返回提交结果
-	*/
-	pub async fn commit(&self) -> DBResult {
-		let mut t = self.0.lock().await;
-		match t.state {
-			TxState::PreparOk => t.commit().await,
-			_ => Some(Err(String::from("InvalidState, expect:TxState::PreparOk, found:") + t.state.to_string().as_str())),
-		}
-	}
-	/**
-	* 回滚一个事务
-	* @param cb 回滚回调
-	* @returns 返回回滚结果
-	*/
-	pub async fn rollback(&self) -> DBResult {
-		let mut t = self.0.lock().await;
-		match t.state {
-			TxState::Committing|TxState::Commited|TxState::CommitFail|TxState::Rollbacking|TxState::Rollbacked|TxState::RollbackFail =>
-				return Some(Err(String::from("InvalidState, expect:TxState::Committing | TxState::Commited| TxState::CommitFail| TxState::Rollbacking| TxState::Rollbacked| TxState::RollbackFail, found:") + t.state.to_string().as_str())),
-			_ => t.rollback().await
-		}
-	}
-	// 锁
-	pub async fn key_lock(&self, arr: Vec<TabKV>, lock_time: usize, read_lock: bool) -> DBResult {
-		let mut t = self.0.lock().await;
-		match t.state {
-			TxState::Ok => t.key_lock(self, arr, lock_time, read_lock).await,
-			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
-		}
-	}
-	/**
-	* 查询
-	* @param arr 待查询的表键值条目向量
-	* @param lock_time 查询时的锁时长
-	* @param read_lock 是否读锁
-	* @param cb 查询回调
-	* @returns 查询结果
-	*/
-	pub async fn query(
-		&self,
-		arr: Vec<TabKV>,
-		lock_time: Option<usize>,
-		read_lock: bool
-	) -> Option<SResult<Vec<TabKV>>> {
-		let mut t = self.0.lock().await;
-		match t.state {
-			TxState::Ok => t.query(arr, lock_time, read_lock).await,
-			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
-		}
-	}
-	/**
-	* 插入、更新或删除
-	* @param arr 待修改的表键值条目向量，如果值为空表示删除，如果键存在则更新，否则插入
-	* @param lock_time 修改时的锁时长
-	* @param read_lock是否读锁
-	* @param cb 修改回调
-	* @returns 修改结果
-	*/
-	pub async fn modify(&self, arr: Vec<TabKV>, lock_time: Option<usize>, read_lock: bool) -> DBResult {
-		let mut t = self.0.lock().await;
-		if !t.writable {
-			return Some(Err(String::from("Readonly")))
-		}
-		match t.state {
-			TxState::Ok => t.modify(arr, lock_time, read_lock).await,
-			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
-		}
-	}
-	// 范围查询
-	pub fn range(
-		&self,
-		_ware: &Atom,
-		_tab: &Atom,
-		_min_key:Vec<u8>,
-		_max_key:Vec<u8>,
-		_key_only: bool,
-		_cb: TxQueryCallback,
-	) -> Option<SResult<Vec<TabKV>>> {
-		None
-	}
-	// 迭代
-	pub async fn iter(
-		&self,
-		ware: &Atom,
-		tab: &Atom,
-		key: Option<Bin>,
-		descending: bool,
-		filter: Filter
-	) -> Option<IterResult> {
-		let mut t = self.0.lock().await;
-		match t.state {
-			TxState::Ok => t.iter(ware, tab, key, descending, filter).await,
-			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
-		}
-	}
-	// 键迭代
-	pub async fn key_iter(
-		&self,
-		ware: &Atom,
-		tab: &Atom,
-		key: Option<Bin>,
-		descending: bool,
-		filter: Filter
-	) -> Option<KeyIterResult> {
-		let mut t = self.0.lock().await;
-		match t.state {
-			TxState::Ok => t.key_iter(ware, tab, key, descending, filter).await,
-			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
-		}
-	}
-	// 索引迭代
-	pub async fn index(
-		&self,
-		_ware: &Atom,
-		_tab: &Atom,
-		_key: Option<Vec<u8>>,
-		_descending: bool,
-		_filter: String,
-	) -> Option<IterResult> {
-		None
-	}
-	// 列出指定库的所有表
-	pub async fn list(&self, ware_name: &Atom) -> Option<Vec<String>> {
-		match self.0.lock().await.ware_log_map.get(ware_name) {
-			Some(ware) => {
-				let mut arr = Vec::new();
-				for e in ware.list().await {
-					arr.push(e.to_string())
-				}
-				Some(arr)
-			},
-			_ => None
-		}
-	}
-	// 表的元信息
-	pub async fn tab_info(&self, ware_name:&Atom, tab_name: &Atom) -> Option<Arc<TabMeta>> {
-		match self.0.lock().await.ware_log_map.get(ware_name) {
-			Some(ware) => ware.tab_info(tab_name).await,
-			_ => None
-		}
-	}
-	// 表的大小
-	pub async fn tab_size(&self, ware_name:&Atom, tab_name: &Atom) -> Option<SResult<usize>> {
-		let mut t = self.0.lock().await;
-		match t.state {
-			TxState::Ok => t.tab_size(ware_name, tab_name).await,
-			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
-		}
-	}
-	/**
-	* 创建、修改或删除表
-	* @param ware_name 库名
-	* @param tab_name 表名
-	* @param meta 表的元信息
-	* @param cb 更新回调
-	* @returns 返回更新结果
-	*/
-	pub async fn alter(&self, ware_name:&Atom, tab_name: &Atom, meta: Option<Arc<TabMeta>>) -> DBResult {
-		let mut t = self.0.lock().await;
-		if !t.writable {
-			return Some(Err(String::from("Readonly")))
-		}
-		match t.state {
-			TxState::Ok => t.alter(ware_name, tab_name, meta).await,
-			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
-		}
-	}
-	// 表改名
-	pub async fn rename(&self, ware_name:&Atom, old_name: &Atom, new_name: Atom, cb: TxCallback) -> DBResult {
-		let mut t = self.0.lock().await;
-		if !t.writable {
-			return Some(Err(String::from("Readonly")))
-		}
-		match t.state {
-			TxState::Ok => t.rename(ware_name, old_name, new_name, cb),
-			_ => Some(Err(String::from("InvalidState, expect:TxState::Ok, found:") + t.state.to_string().as_str())),
-		}
-	}
-}
-
 //================================ 内部结构和方法
 const TIMEOUT: usize = 100;
 
@@ -402,17 +188,21 @@ impl fmt::Debug for WareMap {
 }
 
 enum DatabaseWareSnapshot {
-	MemSnapshot(Arc<DBSnapshot>)
+	MemSnapshot(Arc<MemDBSnapshot>),
+	LogFileSnapshot(Arc<LogFileDBSnapshot>)
 }
 
 impl DatabaseWareSnapshot {
-	pub fn new_memware_snapshot(snapshot: DBSnapshot) -> DatabaseWareSnapshot {
+	pub fn new_mem_ware_snapshot(snapshot: MemDBSnapshot) -> DatabaseWareSnapshot {
 		DatabaseWareSnapshot::MemSnapshot(Arc::new(snapshot))
 	}
 
 	pub async fn list(&self) -> Box<dyn Iterator<Item=Atom>> {
 		match self {
 			DatabaseWareSnapshot::MemSnapshot(shot) => {
+				shot.list().await
+			}
+			DatabaseWareSnapshot::LogFileSnapshot(shot) => {
 				shot.list().await
 			}
 		}
@@ -423,6 +213,9 @@ impl DatabaseWareSnapshot {
 			DatabaseWareSnapshot::MemSnapshot(shot) => {
 				shot.tab_info(tab_name).await
 			}
+			DatabaseWareSnapshot::LogFileSnapshot(shot) => {
+				shot.tab_info(tab_name).await
+			}
 		}
 	}
 
@@ -431,12 +224,18 @@ impl DatabaseWareSnapshot {
 			DatabaseWareSnapshot::MemSnapshot(shot) => {
 				shot.check(tab, meta)
 			}
+			DatabaseWareSnapshot::LogFileSnapshot(shot) => {
+				shot.check(tab, meta)
+			}
 		}
 	}
 
 	pub async fn alter(&self, tab_name: &Atom, meta: Option<Arc<TabMeta>>) {
 		match self {
 			DatabaseWareSnapshot::MemSnapshot(shot) => {
+				shot.alter(tab_name, meta).await
+			}
+			DatabaseWareSnapshot::LogFileSnapshot(shot) => {
 				shot.alter(tab_name, meta).await
 			}
 		}
@@ -449,12 +248,25 @@ impl DatabaseWareSnapshot {
 				match txn {
 					Some(Ok(t)) => {
 						match t {
-							TxnType::MemTxn(t1) => Some(Ok(Arc::new(DatabaseTabTxn::MemTabTxn(t1))))
+							TxnType::MemTxn(t1) => Some(Ok(Arc::new(DatabaseTabTxn::MemTabTxn(t1)))),
+							TxnType::LogFileTxn(t1) => Some(Ok(Arc::new(DatabaseTabTxn::LogFileTabTxn(t1))))
 						}
 					}
-					_ => Some(Err("create tab txn failed".to_string()))
+					_ => Some(Err("create mem tab txn failed".to_string()))
 				}
 				
+			}
+			DatabaseWareSnapshot::LogFileSnapshot(shot) => {
+				let txn = shot.tab_txn(tab_name, id, writable).await;
+				match txn {
+					Some(Ok(t)) => {
+						match t {
+							TxnType::MemTxn(t1) => Some(Ok(Arc::new(DatabaseTabTxn::MemTabTxn(t1)))),
+							TxnType::LogFileTxn(t1) => Some(Ok(Arc::new(DatabaseTabTxn::LogFileTabTxn(t1))))
+						}
+					}
+					_ => Some(Err("create log file tab txn failed".to_string()))
+				}
 			}
 		}
 	}
@@ -464,12 +276,18 @@ impl DatabaseWareSnapshot {
 			DatabaseWareSnapshot::MemSnapshot(shot) => {
 				Arc::new(DatabaseMetaTxn::MemMetaTxn(shot.meta_txn(id)))
 			}
+			DatabaseWareSnapshot::LogFileSnapshot(shot) => {
+				Arc::new(DatabaseMetaTxn::LogFileMetaTxn(shot.meta_txn(id)))
+			}
 		}
 	}
 
 	pub async fn prepare(&self, id: &Guid) -> SResult<()> {
 		match self {
 			DatabaseWareSnapshot::MemSnapshot(shot) => {
+				shot.prepare(id).await
+			}
+			DatabaseWareSnapshot::LogFileSnapshot(shot) => {
 				shot.prepare(id).await
 			}
 		}
@@ -480,12 +298,18 @@ impl DatabaseWareSnapshot {
 			DatabaseWareSnapshot::MemSnapshot(shot) => {
 				shot.commit(id).await
 			}
+			DatabaseWareSnapshot::LogFileSnapshot(shot) => {
+				shot.commit(id).await
+			}
 		}
 	}
 
 	pub async fn rollback(&self, id: &Guid) {
 		match self {
 			DatabaseWareSnapshot::MemSnapshot(shot) => {
+				shot.rollback(id).await
+			}
+			DatabaseWareSnapshot::LogFileSnapshot(shot) => {
 				shot.rollback(id).await
 			}
 		}
@@ -496,21 +320,31 @@ impl DatabaseWareSnapshot {
 
 
 pub enum DatabaseWare {
-	MemWare(Arc<DB>)
+	MemWare(Arc<MemDB>),
+	LogFileWare(Arc<LogFileDB>)
 }
 
 unsafe impl Send for DatabaseWare {}
 unsafe impl Sync for DatabaseWare {}
 
 impl DatabaseWare {
-	pub fn new_memware(db: DB) -> DatabaseWare {
+	pub fn new_memware(db: MemDB) -> DatabaseWare {
 		DatabaseWare::MemWare(Arc::new(db))
 	}
+
+	pub fn new_log_file_ware(db: LogFileDB) -> DatabaseWare {
+		DatabaseWare::LogFileWare(Arc::new(db))
+	}
+
 	async fn tabs_clone(&self) -> Arc<DatabaseWare> {
 		match self {
 			DatabaseWare::MemWare(memdb) => {
 				let cloned = memdb.tabs_clone().await;
 				Arc::new(DatabaseWare::MemWare(cloned))
+			}
+			DatabaseWare::LogFileWare(logfiledb) => {
+				let cloned = logfiledb.tabs_clone().await;
+				Arc::new(DatabaseWare::LogFileWare(cloned))
 			}
 		}
 	}
@@ -521,6 +355,10 @@ impl DatabaseWare {
 				let shot = memdb.snapshot().await;
 				Arc::new(DatabaseWareSnapshot::MemSnapshot(shot))
 			}
+			DatabaseWare::LogFileWare(logfiledb) => {
+				let shot = logfiledb.snapshot().await;
+				Arc::new(DatabaseWareSnapshot::LogFileSnapshot(shot))
+			}
 		}
 	}
 
@@ -528,6 +366,9 @@ impl DatabaseWare {
 		match self {
 			DatabaseWare::MemWare(memdb) => {
 				memdb.tab_info(tab_name).await
+			}
+			DatabaseWare::LogFileWare(logfiledb) => {
+				logfiledb.tab_info(tab_name).await
 			}
 		}
 	}
@@ -537,6 +378,9 @@ impl DatabaseWare {
 			DatabaseWare::MemWare(memdb) => {
 				memdb.list().await
 			}
+			DatabaseWare::LogFileWare(logfiledb) => {
+				logfiledb.list().await
+			}
 		}
 	}
 
@@ -545,12 +389,16 @@ impl DatabaseWare {
 			DatabaseWare::MemWare(memdb) => {
 				memdb.timeout()
 			}
+			DatabaseWare::LogFileWare(logfiledb) => {
+				logfiledb.timeout()
+			}
 		}
 	}
 }
 
-enum DatabaseTabTxn {
-	MemTabTxn(Arc<RefMemeryTxn>)
+pub enum DatabaseTabTxn {
+	MemTabTxn(Arc<RefMemeryTxn>),
+	LogFileTabTxn(Arc<RefLogFileTxn>)
 }
 
 impl DatabaseTabTxn {
@@ -563,12 +411,18 @@ impl DatabaseTabTxn {
 			DatabaseTabTxn::MemTabTxn(txn) => {
 				txn.get_state().await
 			}
+			DatabaseTabTxn::LogFileTabTxn(txn) => {
+				txn.get_state().await
+			}
 		}
 	}
 
 	pub async fn prepare(&self, timeout: usize) -> DBResult {
 		match self {
 			DatabaseTabTxn::MemTabTxn(txn) => {
+				txn.prepare(timeout).await
+			}
+			DatabaseTabTxn::LogFileTabTxn(txn) => {
 				txn.prepare(timeout).await
 			}
 		}
@@ -579,6 +433,9 @@ impl DatabaseTabTxn {
 			DatabaseTabTxn::MemTabTxn(txn) => {
 				txn.commit().await
 			}
+			DatabaseTabTxn::LogFileTabTxn(txn) => {
+				txn.commit().await
+			}
 		}
 	}
 
@@ -587,12 +444,18 @@ impl DatabaseTabTxn {
 			DatabaseTabTxn::MemTabTxn(txn) => {
 				txn.rollback().await
 			}
+			DatabaseTabTxn::LogFileTabTxn(txn) => {
+				txn.rollback().await
+			}
 		}
 	}
 
 	pub async fn key_lock(&self, _arr: Arc<Vec<TabKV>>, _lock_time: usize, _readonly: bool) -> DBResult {
 		match self {
 			DatabaseTabTxn::MemTabTxn(txn) => {
+				txn.key_lock(_arr, _lock_time, _readonly).await
+			}
+			DatabaseTabTxn::LogFileTabTxn(txn) => {
 				txn.key_lock(_arr, _lock_time, _readonly).await
 			}
 		}
@@ -608,12 +471,18 @@ impl DatabaseTabTxn {
 			DatabaseTabTxn::MemTabTxn(txn) => {
 				txn.query(arr, _lock_time, _readonly).await
 			}
+			DatabaseTabTxn::LogFileTabTxn(txn) => {
+				txn.query(arr, _lock_time, _readonly).await
+			}
 		}
 	}
 
 	pub async fn modify(&self, arr: Arc<Vec<TabKV>>, _lock_time: Option<usize>, _readonly: bool) -> DBResult {
 		match self {
 			DatabaseTabTxn::MemTabTxn(txn) => {
+				txn.modify(arr, _lock_time, _readonly).await
+			}
+			DatabaseTabTxn::LogFileTabTxn(txn) => {
 				txn.modify(arr, _lock_time, _readonly).await
 			}
 		}
@@ -631,6 +500,9 @@ impl DatabaseTabTxn {
 			DatabaseTabTxn::MemTabTxn(txn) => {
 				txn.iter(tab, key, descending, filter).await
 			}
+			DatabaseTabTxn::LogFileTabTxn(txn) => {
+				txn.iter(tab, key, descending, filter).await
+			}
 		}
 	}
 
@@ -642,6 +514,9 @@ impl DatabaseTabTxn {
 	) -> Option<KeyIterResult> {
 		match self {
 			DatabaseTabTxn::MemTabTxn(txn) => {
+				txn.key_iter(key, descending, filter).await
+			}
+			DatabaseTabTxn::LogFileTabTxn(txn) => {
 				txn.key_iter(key, descending, filter).await
 			}
 		}
@@ -659,6 +534,9 @@ impl DatabaseTabTxn {
 			DatabaseTabTxn::MemTabTxn(txn) => {
 				txn.index(_tab, _index_key, _key, _descending, _filter)
 			}
+			DatabaseTabTxn::LogFileTabTxn(txn) => {
+				txn.index(_tab, _index_key, _key, _descending, _filter)
+			}
 		}
 	}
 
@@ -667,12 +545,16 @@ impl DatabaseTabTxn {
 			DatabaseTabTxn::MemTabTxn(txn) => {
 				txn.tab_size().await
 			}
+			DatabaseTabTxn::LogFileTabTxn(txn) => {
+				txn.tab_size().await
+			}
 		}
 	}
 }
 
 enum DatabaseMetaTxn {
-	MemMetaTxn(Arc<MemeryMetaTxn>)
+	MemMetaTxn(Arc<MemeryMetaTxn>),
+	LogFileMetaTxn(Arc<LogFileMetaTxn>)
 }
 
 impl DatabaseMetaTxn {
@@ -685,6 +567,9 @@ impl DatabaseMetaTxn {
 			DatabaseMetaTxn::MemMetaTxn(txn) => {
 				txn.alter(_tab, _meta).await
 			}
+			DatabaseMetaTxn::LogFileMetaTxn(txn) => {
+				txn.alter(_tab, _meta).await
+			}
 		}
 	}
 
@@ -693,12 +578,18 @@ impl DatabaseMetaTxn {
 			DatabaseMetaTxn::MemMetaTxn(txn) => {
 				txn.snapshot(_tab, _from).await
 			}
+			DatabaseMetaTxn::LogFileMetaTxn(txn) => {
+				txn.snapshot(_tab, _from).await
+			}
 		}
 	}
 
 	async fn rename(&self, _tab: &Atom, _new_name: &Atom) -> DBResult {
 		match self {
 			DatabaseMetaTxn::MemMetaTxn(txn) => {
+				txn.rename(_tab, _new_name).await
+			}
+			DatabaseMetaTxn::LogFileMetaTxn(txn) => {
 				txn.rename(_tab, _new_name).await
 			}
 		}
@@ -713,12 +604,18 @@ impl DatabaseMetaTxn {
 			DatabaseMetaTxn::MemMetaTxn(txn) => {
 				txn.prepare(_timeout).await
 			}
+			DatabaseMetaTxn::LogFileMetaTxn(txn) => {
+				txn.prepare(_timeout).await
+			}
 		}
 	}
 
 	async fn commit(&self) -> CommitResult {
 		match self {
 			DatabaseMetaTxn::MemMetaTxn(txn) => {
+				txn.commit().await
+			}
+			DatabaseMetaTxn::LogFileMetaTxn(txn) => {
 				txn.commit().await
 			}
 		}
@@ -728,6 +625,9 @@ impl DatabaseMetaTxn {
 	async fn rollback(&self) -> DBResult {
 		match self {
 			DatabaseMetaTxn::MemMetaTxn(txn) => {
+				txn.rollback().await
+			}
+			DatabaseMetaTxn::LogFileMetaTxn(txn) => {
 				txn.rollback().await
 			}
 		}
@@ -776,21 +676,24 @@ pub fn get_next_seq() -> u64 {
 
 
 // 子事务
-struct Tx {
+pub struct Tr {
 	// TODO 下面几个可以放到锁的外部，减少锁
 	writable: bool,
 	timeout: usize, // 子事务的预提交的超时时间, TODO 取提交的库的最大超时时间
 	id: Guid,
 	ware_log_map: FnvHashMap<Atom, Arc<DatabaseWareSnapshot>>,// 库名对应库快照
 	state: TxState,
-	_timer_ref: usize,
 	tab_txns: FnvHashMap<(Atom, Atom), Arc<DatabaseTabTxn>>, //表事务表
 	meta_txns: FnvHashMap<Atom, Arc<DatabaseMetaTxn>>, //元信息事务表
 }
 
-impl Tx {
+impl Tr {
+	// 获得事务的状态
+	pub fn get_state(&self) -> TxState {
+		self.state.clone()
+	}
 	// 预提交事务
-	async fn prepare(&mut self) -> DBResult {
+	pub async fn prepare(&mut self) -> DBResult {
 		//如果预提交内容为空，直接返回预提交成功
 		if self.meta_txns.len() == 0 && self.tab_txns.len() == 0 {
 			self.state = TxState::PreparOk;
@@ -852,7 +755,7 @@ impl Tx {
 		None
 	}
 	// 提交事务
-	async fn commit(&mut self) -> DBResult {
+	pub async fn commit(&mut self) -> DBResult {
 		self.state = TxState::Committing;
 		// 先提交mgr上的事务
 		let alter_len = self.meta_txns.len();
@@ -877,10 +780,7 @@ impl Tx {
 							for (k, v) in logs.into_iter(){ //将表的提交日志添加到事件列表中
 								match v {
 									RwLog::Write(value) => {
-										// TODO
-										// if let Some(w) = self.ware_log_map.get(&txn_name.0) {
-										// 	w.notify(Event{seq: get_next_seq(), ware: txn_name.0.clone(), tab: txn_name.1.clone(), other: EventType::Tab{key:k.clone(), value: value.clone()}});
-										// }
+										
 									},
 									_ => (),
 								}
@@ -913,7 +813,7 @@ impl Tx {
 		None
 	}
 	// 回滚事务
-	async fn rollback(&mut self) -> DBResult {
+	pub async fn rollback(&mut self) -> DBResult {
 		self.state = TxState::Rollbacking;
 		// 先回滚mgr上的事务
 		let alter_len = self.meta_txns.len();
@@ -962,7 +862,7 @@ impl Tx {
 		None
 	}
 	// 查询
-	async fn query(
+	pub async fn query(
 		&mut self,
 		arr: Vec<TabKV>,
 		lock_time: Option<usize>,
@@ -1012,7 +912,7 @@ impl Tx {
 		None
 	}
 	// 修改，插入、删除及更新
-	async fn modify(&mut self, arr: Vec<TabKV>, lock_time: Option<usize>, read_lock: bool) -> DBResult {
+	pub async fn modify(&mut self, arr: Vec<TabKV>, lock_time: Option<usize>, read_lock: bool) -> DBResult {
 		if arr.len() == 0 {
 			return Some(Ok(()))
 		}
@@ -1041,7 +941,7 @@ impl Tx {
 		None
 	}
 	// 迭代
-	async fn iter(&mut self, ware: &Atom, tab: &Atom, key: Option<Bin>, descending: bool, filter: Filter) -> Option<IterResult> {
+	pub async fn iter(&mut self, ware: &Atom, tab: &Atom, key: Option<Bin>, descending: bool, filter: Filter) -> Option<IterResult> {
 		let key1 = key.clone();
 		let filter1 = filter.clone();
 
@@ -1060,7 +960,7 @@ impl Tx {
 		}
 	}
 	// 迭代
-	async fn key_iter(&mut self, ware: &Atom, tab: &Atom, key: Option<Bin>, descending: bool, filter: Filter) -> Option<KeyIterResult> {
+	pub async fn key_iter(&mut self, ware: &Atom, tab: &Atom, key: Option<Bin>, descending: bool, filter: Filter) -> Option<KeyIterResult> {
 		self.state = TxState::Doing;
 		match self.build(&ware, &tab).await {
 			Some(r) => match r {
@@ -1074,7 +974,7 @@ impl Tx {
 		}
 	}
 	// 表的大小
-	async fn tab_size(&mut self, ware_name: &Atom, tab_name: &Atom) -> Option<SResult<usize>> {
+	pub async fn tab_size(&mut self, ware_name: &Atom, tab_name: &Atom) -> Option<SResult<usize>> {
 		self.state = TxState::Doing;
 		match self.build(ware_name, tab_name).await {
 			Some(r) => match r {
@@ -1089,7 +989,7 @@ impl Tx {
 		None
 	}
 	// 新增 修改 删除 表
-	async fn alter(&mut self, ware_name: &Atom, tab_name: &Atom, meta: Option<Arc<TabMeta>>) -> DBResult {
+	pub async fn alter(&mut self, ware_name: &Atom, tab_name: &Atom, meta: Option<Arc<TabMeta>>) -> DBResult {
 		self.state = TxState::Doing;
 		let ware = match self.ware_log_map.get(ware_name) {
 			Some(w) => match w.check(tab_name, &meta) { // 检查
@@ -1109,13 +1009,36 @@ impl Tx {
 		self.single_result(txn.alter(tab_name, meta).await)
 	}
 	// 表改名
-	fn rename(&mut self, _ware_name: &Atom, _old_name: &Atom, _new_name: Atom, _cb: TxCallback) -> DBResult {
+	pub fn rename(&mut self, _ware_name: &Atom, _old_name: &Atom, _new_name: Atom, _cb: TxCallback) -> DBResult {
 		self.state = TxState::Doing;
 		// TODO
 		None
 	}
+
+	// 表的元信息
+	pub async fn tab_info(&self, ware_name:&Atom, tab_name: &Atom) -> Option<Arc<TabMeta>> {
+		match self.ware_log_map.get(ware_name) {
+			Some(ware) => ware.tab_info(tab_name).await,
+			_ => None
+		}
+	}
+
+	// 列出指定库的所有表
+	pub async fn list(&self, ware_name: &Atom) -> Option<Vec<String>> {
+		match self.ware_log_map.get(ware_name) {
+			Some(ware) => {
+				let mut arr = Vec::new();
+				for e in ware.list().await {
+						arr.push(e.to_string())
+				}
+				Some(arr)
+			},
+			_ => None
+		}
+	}
+	
 	// 创建表
-	async fn build(&mut self, ware_name: &Atom, tab_name: &Atom) -> Option<SResult<Arc<DatabaseTabTxn>>> {
+	pub async fn build(&mut self, ware_name: &Atom, tab_name: &Atom) -> Option<SResult<Arc<DatabaseTabTxn>>> {
 		//let txn_key = Atom::from(String::from((*ware_name).as_str()) + "##" + tab_name.as_str());
 		let txn_key = (ware_name.clone(), tab_name.clone());
 		let txn = match self.tab_txns.get(&txn_key) {

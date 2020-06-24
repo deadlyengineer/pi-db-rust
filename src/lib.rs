@@ -7,8 +7,11 @@
 
 #[macro_use]
 extern crate lazy_static;
+#[macro_use]
+extern crate log;
 
 pub mod db;
 pub mod mgr;
 pub mod tabs;
 pub mod memery_db;
+pub mod log_file_db;
