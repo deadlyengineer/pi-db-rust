@@ -34,12 +34,6 @@ unsafe impl Sync for CommitChan {}
 lazy_static! {
 	pub static ref COMMIT_CHAN: (Sender<CommitChan>, Receiver<CommitChan>) = unbounded();
 	pub static ref SEQ_CHAN: (Sender<u64>, Receiver<u64>) = unbounded();
-	static ref SEQ: AtomicU64 = {
-		match SEQ_CHAN.1.recv() {
-			Ok(seq) => AtomicU64::new(seq),
-			Err(e) => panic!("SEQ channel error {:?}", e)
-		}
-	};
 }
 
 /**
@@ -669,11 +663,6 @@ impl WareMap {
 		self.0.keys(key, descending)
 	}
 }
-
-pub fn get_next_seq() -> u64 {
-	SEQ.fetch_add(1, Ordering::SeqCst)
-}
-
 
 // 子事务
 pub struct Tr {
