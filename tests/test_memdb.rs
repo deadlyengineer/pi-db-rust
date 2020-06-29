@@ -16,7 +16,7 @@ fn test_memory_db() {
 
 	let _ = rt.spawn(rt.alloc(), async move {
 		let mgr = Mgr::new(GuidGen::new(0, 0));
-		let ware = DatabaseWare::new_memware(MemDB::new());
+		let ware = DatabaseWare::new_mem_ware(MemDB::new());
 		let _ = mgr.register(Atom::from("memory"), Arc::new(ware)).await;
 		let mut tr = mgr.transaction(true).await;
 
@@ -66,7 +66,7 @@ fn test_memory_db() {
 		{
 			let iter = tr4.iter(&Atom::from("memory"), &Atom::from("hello"), None, false, None).await;
 
-			if let Some(Ok(mut it)) = iter {
+			if let Ok(mut it) = iter {
 				loop {
 					let item = it.next();
 					println!("iter item = {:?}", item);

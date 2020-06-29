@@ -1,25 +1,21 @@
 
-use std::sync::{Arc};
-use std::cell::RefCell;
+use std::sync::Arc;
 use std::mem;
 
-use fnv::FnvHashMap;
-
+use hash::XHashMap;
 use ordmap::ordmap::{OrdMap, Entry, Iter as OIter, Keys};
 use ordmap::asbtree::{Tree};
 use atom::{Atom};
 use guid::Guid;
 use apm::counter::{GLOBAL_PREF_COLLECT, PrefCounter};
 
-use crate::db::{Bin, TabKV, SResult, DBResult, IterResult, KeyIterResult, NextResult, TxCallback, TxQueryCallback, Txn, TabTxn, MetaTxn, Tab, OpenTab, Event, Ware, WareSnapshot, Filter, TxState, Iter, CommitResult, RwLog, Bon, TabMeta};
+use crate::db::{Bin, TabKV, SResult, IterResult, KeyIterResult, NextResult, Event, Filter, TxState, Iter, RwLog, Bon, TabMeta, CommitResult, DBResult};
 use crate::tabs::{TabLog, Tabs, Prepare};
 use crate::db::BuildDbType;
 use r#async::lock::mutex_lock::Mutex;
 use r#async::lock::rw_lock::RwLock;
 use crate::tabs::TxnType;
 
-//内存库前缀
-const MEMORY_WARE_PREFIX: &'static str = "mem_ware_";
 //内存表前缀
 const MEMORY_TABLE_PREFIX: &'static str = "mem_table_";
 //内存表事务创建数量后缀
@@ -66,7 +62,7 @@ impl MTab {
 		MEMORY_WARE_CREATE_COUNT.sum(1);
 
 		let tab = MemeryTab {
-			prepare: Prepare::new(FnvHashMap::with_capacity_and_hasher(0, Default::default())),
+			prepare: Prepare::new(XHashMap::with_capacity_and_hasher(0, Default::default())),
 			root: OrdMap::new(None),
 			tab: tab.clone(),
 			trans_count: GLOBAL_PREF_COLLECT.
@@ -113,7 +109,7 @@ impl MTab {
 * 内存库
 */
 #[derive(Clone)]
-pub struct MemDB(Arc<RwLock<Tabs>>);
+pub struct MemDB(Arc<Tabs>);
 
 impl MemDB {
 	/**
@@ -123,21 +119,21 @@ impl MemDB {
 	pub fn new() -> Self {
 		MEMORY_WARE_CREATE_COUNT.sum(1);
 
-		MemDB(Arc::new(RwLock::new(Tabs::new())))
+		MemDB(Arc::new(Tabs::new()))
 	}
 
-	pub async fn open(tab: &Atom) -> Option<SResult<MTab>> {
-		Some(Ok(MTab::new(tab)))
+	pub async fn open(tab: &Atom) -> SResult<MTab> {
+		Ok(MTab::new(tab))
 	}
 
 	// 拷贝全部的表
 	pub async fn tabs_clone(&self) -> Arc<Self> {
-		Arc::new(MemDB(Arc::new(RwLock::new(self.0.read().await.clone_map()))))
+		Arc::new(MemDB(Arc::new(self.0.clone_map())))
 	}
 
 	// 列出全部的表
 	pub async fn list(&self) -> Box<dyn Iterator<Item=Atom>> {
-		Box::new(self.0.read().await.list())
+		Box::new(self.0.list().await)
 	}
 
 	// 获取该库对预提交后的处理超时时间, 事务会用最大超时时间来预提交
@@ -147,12 +143,12 @@ impl MemDB {
 
 	// 表的元信息
 	pub async fn tab_info(&self, tab_name: &Atom) -> Option<Arc<TabMeta>> {
-		self.0.read().await.get(tab_name)
+		self.0.get(tab_name).await
 	}
 
 	// 获取当前表结构快照
 	pub async fn snapshot(&self) -> Arc<MemDBSnapshot> {
-		Arc::new(MemDBSnapshot(self.clone(), Mutex::new(self.0.read().await.snapshot())))
+		Arc::new(MemDBSnapshot(self.clone(), Mutex::new(self.0.snapshot().await)))
 	}
 }
 
@@ -169,7 +165,7 @@ impl MemDBSnapshot {
 		self.1.lock().await.get(tab_name)
 	}
 	// 检查该表是否可以创建
-	pub fn check(&self, _tab: &Atom, _meta: &Option<Arc<TabMeta>>) -> SResult<()> {
+	pub fn check(&self, _tab: &Atom, _meta: &Option<Arc<TabMeta>>) -> DBResult {
 		Ok(())
 	}
 	// 新增 修改 删除 表
@@ -177,7 +173,7 @@ impl MemDBSnapshot {
 		self.1.lock().await.alter(tab_name, meta)
 	}
 	// 创建指定表的表事务
-	pub async fn tab_txn(&self, tab_name: &Atom, id: &Guid, writable: bool) -> Option<SResult<TxnType>> {
+	pub async fn tab_txn(&self, tab_name: &Atom, id: &Guid, writable: bool) -> SResult<TxnType> {
 		self.1.lock().await.build(BuildDbType::MemoryDB, tab_name, id, writable).await
 	}
 	// 创建一个meta事务
@@ -185,16 +181,16 @@ impl MemDBSnapshot {
 		Arc::new(MemeryMetaTxn)
 	}
 	// 元信息的预提交
-	pub async fn prepare(&self, id: &Guid) -> SResult<()>{
-		(self.0).0.write().await.prepare(id, &mut *self.1.lock().await)
+	pub async fn prepare(&self, id: &Guid) -> DBResult{
+		(self.0).0.prepare(id, &mut *self.1.lock().await).await
 	}
 	// 元信息的提交
 	pub async fn commit(&self, id: &Guid){
-		(self.0).0.write().await.commit(id)
+		(self.0).0.commit(id).await
 	}
 	// 回滚
 	pub async fn rollback(&self, id: &Guid){
-		(self.0).0.write().await.rollback(id)
+		(self.0).0.rollback(id).await
 	}
 	// 库修改通知
 	pub fn notify(&self, _event: Event) {}
@@ -207,7 +203,7 @@ pub struct MemeryTxn {
 	tab: MTab,
 	root: BinMap,
 	old: BinMap,
-	rwlog: FnvHashMap<Bin, RwLog>,
+	rwlog: XHashMap<Bin, RwLog>,
 	state: TxState,
 }
 
@@ -223,7 +219,7 @@ impl MemeryTxn {
 			root: root.clone(),
 			tab,
 			old: root,
-			rwlog: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
+			rwlog: XHashMap::with_capacity_and_hasher(0, Default::default()),
 			state: TxState::Ok,
 		};
 		return RefMemeryTxn(Mutex::new(txn))
@@ -252,7 +248,7 @@ impl MemeryTxn {
 		}
 	}
 	//插入/修改数据
-	pub async fn upsert(&mut self, key: Bin, value: Bin) -> SResult<()> {
+	pub async fn upsert(&mut self, key: Bin, value: Bin) -> DBResult {
 		self.root.upsert(Bon::new(key.clone()), value.clone(), false);
 		self.rwlog.insert(key.clone(), RwLog::Write(Some(value.clone())));
 
@@ -265,7 +261,7 @@ impl MemeryTxn {
 		Ok(())
 	}
 	//删除
-	pub async fn delete(&mut self, key: Bin) -> SResult<()> {
+	pub async fn delete(&mut self, key: Bin) -> DBResult {
 		if let Some(Some(value)) = self.root.delete(&Bon::new(key.clone()), false) {
 			{
 				let tab = self.tab.0.lock().await;
@@ -279,19 +275,19 @@ impl MemeryTxn {
 	}
 
 	//预提交
-	pub async fn prepare1(&mut self) -> SResult<()> {
-		let mut tab = self.tab.0.lock().await;
+	pub async fn prepare_inner(&mut self) -> DBResult {
+		// let mut tab = self.tab.0.lock().await;
 		//遍历事务中的读写日志
 		for (key, rw_v) in self.rwlog.iter() {
 			//检查预提交是否冲突
-			match tab.prepare.try_prepare(key, rw_v) {
+			match self.tab.0.lock().await.prepare.try_prepare(key, rw_v) {
 				Ok(_) => (),
 				Err(s) => return Err(s),
 			};
 			//检查Tab根节点是否改变
-			if tab.root.ptr_eq(&self.old) == false {
+			if self.tab.0.lock().await.root.ptr_eq(&self.old) == false {
 				let key = Bon::new(key.clone());
-				match tab.root.get(&key) {
+				match self.tab.0.lock().await.root.get(&key) {
 					Some(r1) => match self.old.get(&key) {
 						Some(r2) if (r1 as *const Bin) == (r2 as *const Bin) => (),
 						_ => return Err(String::from("parpare conflicted value diff"))
@@ -303,22 +299,22 @@ impl MemeryTxn {
 				}
 			}
 		}
-		let rwlog = mem::replace(&mut self.rwlog, FnvHashMap::with_capacity_and_hasher(0, Default::default()));
+		let rwlog = mem::replace(&mut self.rwlog, XHashMap::with_capacity_and_hasher(0, Default::default()));
 		//写入预提交
-		tab.prepare.insert(self.id.clone(), rwlog);
+		self.tab.0.lock().await.prepare.insert(self.id.clone(), rwlog);
 
-		tab.prepare_count.sum(1);
+		self.tab.0.lock().await.prepare_count.sum(1);
 
 		return Ok(())
 	}
 	//提交
-	pub async fn commit1(&mut self) -> SResult<FnvHashMap<Bin, RwLog>> {
-		let mut tab = self.tab.0.lock().await;
-		let log = match tab.prepare.remove(&self.id) {
+	pub async fn commit_inner(&mut self) -> CommitResult {
+		let logs = self.tab.0.lock().await.prepare.remove(&self.id);
+		let logs = match logs {
 			Some(rwlog) => {
-				let root_if_eq = tab.root.ptr_eq(&self.old);
+				let root_if_eq = self.tab.0.lock().await.root.ptr_eq(&self.old);
 				//判断根节点是否相等
-				if root_if_eq == false {
+				if !root_if_eq {
 					for (k, rw_v) in rwlog.iter() {
 						match rw_v {
 							RwLog::Read => (),
@@ -326,12 +322,10 @@ impl MemeryTxn {
 								let k = Bon::new(k.clone());
 								match rw_v {
 									RwLog::Write(None) => {
-										tab.root.delete(&k, false);
-										()
+										self.tab.0.lock().await.root.delete(&k, false);
 									},
 									RwLog::Write(Some(v)) => {
-										tab.root.upsert(k.clone(), v.clone(), false);
-										()
+										self.tab.0.lock().await.root.upsert(k.clone(), v.clone(), false);
 									},
 									_ => (),
 								}
@@ -340,19 +334,19 @@ impl MemeryTxn {
 						}
 					}
 				} else {
-					tab.root = self.root.clone();
+					self.tab.0.lock().await.root = self.root.clone();
 				}
 				rwlog
 			},
 			None => return Err(String::from("error prepare null"))
 		};
 
-		tab.commit_count.sum(1);
+		self.tab.0.lock().await.commit_count.sum(1);
 
-		Ok(log)
+		Ok(logs)
 	}
 	//回滚
-	pub async fn rollback1(&mut self) -> SResult<()> {
+	pub async fn rollback_inner(&mut self) -> DBResult {
 		let mut tab = self.tab.0.lock().await;
 		tab.prepare.remove(&self.id);
 
@@ -371,14 +365,14 @@ impl RefMemeryTxn {
 	pub async fn prepare(&self, _timeout: usize) -> DBResult {
 		let mut txn = self.0.lock().await;
 		txn.state = TxState::Preparing;
-		match txn.prepare1().await {
+		match txn.prepare_inner().await {
 			Ok(()) => {
 				txn.state = TxState::PreparOk;
-				return Some(Ok(()))
+				return Ok(())
 			},
 			Err(e) => {
 				txn.state = TxState::PreparFail;
-				return Some(Err(e.to_string()))
+				return Err(e.to_string())
 			},
 		}
 	}
@@ -386,30 +380,30 @@ impl RefMemeryTxn {
 	pub async fn commit(&self) -> CommitResult {
 		let mut txn = self.0.lock().await;
 		txn.state = TxState::Committing;
-		match txn.commit1().await {
+		match txn.commit_inner().await {
 			Ok(log) => {
 				txn.state = TxState::Commited;
-				return Some(Ok(log))
+				return Ok(log)
 			},
-			Err(e) => return Some(Err(e.to_string())),
+			Err(e) => return Err(e.to_string()),
 		}
 	}
 	// 回滚一个事务
 	pub async fn rollback(&self) -> DBResult {
 		let mut txn = self.0.lock().await;
 		txn.state = TxState::Rollbacking;
-		match txn.rollback1().await {
+		match txn.rollback_inner().await {
 			Ok(()) => {
 				txn.state = TxState::Rollbacked;
-				return Some(Ok(()))
+				return Ok(())
 			},
-			Err(e) => return Some(Err(e.to_string())),
+			Err(e) => return Err(e.to_string())
 		}
 	}
 
 	// 键锁，key可以不存在，根据lock_time的值决定是锁还是解锁
 	pub async fn key_lock(&self, _arr: Arc<Vec<TabKV>>, _lock_time: usize, _readonly: bool) -> DBResult {
-		None
+		Ok(())
 	}
 	// 查询
 	pub async fn query(
@@ -417,50 +411,48 @@ impl RefMemeryTxn {
 		arr: Arc<Vec<TabKV>>,
 		_lock_time: Option<usize>,
 		_readonly: bool
-	) -> Option<SResult<Vec<TabKV>>> {
-		let mut txn = self.0.lock().await;
+	) -> SResult<Vec<TabKV>> {
 		let mut value_arr = Vec::new();
 		for tabkv in arr.iter() {
-			let value = match txn.get(tabkv.key.clone()).await {
+			let value = match self.0.lock().await.get(tabkv.key.clone()).await {
 				Some(v) => Some(v),
 				_ => None
 			};
 
 			value_arr.push(
-				TabKV{
-				ware: tabkv.ware.clone(),
-				tab: tabkv.tab.clone(),
-				key: tabkv.key.clone(),
-				index: tabkv.index.clone(),
-				value: value,
+				TabKV {
+					ware: tabkv.ware.clone(),
+					tab: tabkv.tab.clone(),
+					key: tabkv.key.clone(),
+					index: tabkv.index.clone(),
+					value,
 				}
 			)
 		}
-		Some(Ok(value_arr))
+		Ok(value_arr)
 	}
 	// 修改，插入、删除及更新
 	pub async fn modify(&self, arr: Arc<Vec<TabKV>>, _lock_time: Option<usize>, _readonly: bool) -> DBResult {
-		let mut txn = self.0.lock().await;
 		for tabkv in arr.iter() {
 			if tabkv.value == None {
-				match txn.delete(tabkv.key.clone()).await {
+				match self.0.lock().await.delete(tabkv.key.clone()).await {
 				Ok(_) => (),
 				Err(e) => 
 					{
-						return Some(Err(e.to_string()))
+						return Err(e.to_string())
 					},
 				};
 			} else {
-				match txn.upsert(tabkv.key.clone(), tabkv.value.clone().unwrap()).await {
+				match self.0.lock().await.upsert(tabkv.key.clone(), tabkv.value.clone().unwrap()).await {
 				Ok(_) => (),
 				Err(e) =>
 					{
-						return Some(Err(e.to_string()))
+						return Err(e.to_string())
 					},
 				};
 			}
 		}
-		Some(Ok(()))
+		Ok(())
 	}
 	// 迭代
 	pub async fn iter(
@@ -469,7 +461,7 @@ impl RefMemeryTxn {
 		key: Option<Bin>,
 		descending: bool,
 		filter: Filter
-	) -> Option<IterResult> {
+	) -> IterResult {
 		let b = self.0.lock().await;
 		let key = match key {
 			Some(k) => Some(Bon::new(k)),
@@ -480,7 +472,7 @@ impl RefMemeryTxn {
 			None => None,
 		};
 
-		Some(Ok(Box::new(MemIter::new(tab, b.root.clone(), b.root.iter( key, descending), filter))))
+		Ok(Box::new(MemIter::new(tab, b.root.clone(), b.root.iter( key, descending), filter)))
 	}
 	// 迭代
 	pub async fn key_iter(
@@ -488,7 +480,7 @@ impl RefMemeryTxn {
 		key: Option<Bin>,
 		descending: bool,
 		filter: Filter
-	) -> Option<KeyIterResult> {
+	) -> KeyIterResult {
 		let b = self.0.lock().await;
 		let key = match key {
 			Some(k) => Some(Bon::new(k)),
@@ -499,7 +491,7 @@ impl RefMemeryTxn {
 			None => None,
 		};
 		let tab = b.tab.0.lock().await.tab.clone();
-		Some(Ok(Box::new(MemKeyIter::new(&tab, b.root.clone(), b.root.keys(key, descending), filter))))
+		Ok(Box::new(MemKeyIter::new(&tab, b.root.clone(), b.root.keys(key, descending), filter)))
 	}
 	// 索引迭代
 	pub fn index(
@@ -509,13 +501,13 @@ impl RefMemeryTxn {
 		_key: Option<Bin>,
 		_descending: bool,
 		_filter: Filter,
-	) -> Option<IterResult> {
-		None
+	) -> IterResult {
+		Err("not implemented".to_string())
 	}
 	// 表的大小
-	pub async fn tab_size(&self) -> Option<SResult<usize>> {
+	pub async fn tab_size(&self) -> SResult<usize> {
 		let txn = self.0.lock().await;
-		Some(Ok(txn.root.size()))
+		Ok(txn.root.size())
 	}
 }
 
@@ -647,16 +639,16 @@ pub struct MemeryMetaTxn;
 impl MemeryMetaTxn {
 	// 创建表、修改指定表的元数据
 	pub async fn alter(&self, _tab: &Atom, _meta: Option<Arc<TabMeta>>) -> DBResult {
-		Some(Ok(()))
+		Ok(())
 	}
 
 	// 快照拷贝表
-	pub async fn snapshot(&self, _tab: &Atom, _from: &Atom) -> DBResult{
-		Some(Ok(()))
+	pub async fn snapshot(&self, _tab: &Atom, _from: &Atom) -> DBResult {
+		Ok(())
 	}
 	// 修改指定表的名字
 	pub async fn rename(&self, _tab: &Atom, _new_name: &Atom) -> DBResult {
-		Some(Ok(()))
+		Ok(())
 	} 
 
 	// 获得事务的状态
@@ -665,14 +657,14 @@ impl MemeryMetaTxn {
 	}
 	// 预提交一个事务
 	pub async fn prepare(&self, _timeout: usize) -> DBResult {
-		Some(Ok(()))
+		Ok(())
 	}
 	// 提交一个事务
 	pub async fn commit(&self) -> CommitResult {
-		Some(Ok(FnvHashMap::with_capacity_and_hasher(0, Default::default())))
+		Ok(XHashMap::with_capacity_and_hasher(0, Default::default()))
 	}
 	// 回滚一个事务
 	pub async fn rollback(&self) -> DBResult {
-		Some(Ok(()))
+		Ok(())
 	}
 }

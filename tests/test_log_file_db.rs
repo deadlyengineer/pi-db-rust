@@ -66,7 +66,7 @@ fn test_log_file_db() {
 		{
 			let iter = tr4.iter(&Atom::from("logfile"), &Atom::from("./testlogfile/hello"), None, false, None).await;
 
-			if let Some(Ok(mut it)) = iter {
+			if let Ok(mut it) = iter {
 				loop {
 					let item = it.next();
 					println!("iter item = {:?}", item);

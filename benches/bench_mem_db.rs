@@ -36,7 +36,7 @@ fn bench_log_file_read(b: &mut Bencher) {
 
 async fn test_mem_db_write() {
 	let mgr = Mgr::new(GuidGen::new(0, 0));
-	let ware = DatabaseWare::new_memware(MemDB::new());
+	let ware = DatabaseWare::new_mem_ware(MemDB::new());
 	let _ = mgr.register(Atom::from("memory"), Arc::new(ware)).await;
 	let mut tr = mgr.transaction(true).await;
 
@@ -78,7 +78,7 @@ async fn test_mem_db_write() {
 
 async fn test_mem_db_read() {
 	let mgr = Mgr::new(GuidGen::new(0, 0));
-	let ware = DatabaseWare::new_memware(MemDB::new());
+	let ware = DatabaseWare::new_mem_ware(MemDB::new());
 	let _ = mgr.register(Atom::from("memory"), Arc::new(ware)).await;
 	let mut tr = mgr.transaction(true).await;
 

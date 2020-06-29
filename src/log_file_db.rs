@@ -1,38 +1,29 @@
-use std::sync::{Arc};
-use std::cell::RefCell;
+use std::sync::Arc;
 use std::mem;
 use std::path::{Path, PathBuf};
-use std::fs::{self, read_to_string};
+use std::fs;
 use std::time::Instant;
-use fnv::FnvHashMap;
-use std::collections::{ BTreeMap, HashMap };
+use std::collections::BTreeMap;
 use std::env;
-use std::collections::HashSet;
-use std::sync::atomic::{ Ordering, AtomicIsize };
 use std::io::Result;
 
 use ordmap::ordmap::{OrdMap, Entry, Iter as OIter, Keys};
-use ordmap::asbtree::{Tree};
-use atom::{Atom};
+use ordmap::asbtree::Tree;
+use atom::Atom;
 use guid::Guid;
 use hash::XHashMap;
 use r#async::lock::mutex_lock::Mutex;
 use r#async::lock::rw_lock::RwLock;
+use pi_store::log_store::log_file::{PairLoader, LogMethod, LogFile};
+use r#async::rt::multi_thread::{MultiTaskPool, MultiTaskRuntime};
+use r#async::rt::{AsyncRuntime, AsyncValue};
+use r#async::lock::spin_lock::SpinLock;
+use num_cpus;
 
-use crossbeam_channel::{unbounded, Receiver, Sender};
-
-use crate::db::{EventType, Bin, TabKV, SResult, DBResult, IterResult, KeyIterResult, NextResult, TxCallback, TxQueryCallback, Txn, TabTxn, MetaTxn, Tab, OpenTab, Event, Ware, WareSnapshot, Filter, TxState, Iter, CommitResult, RwLog, Bon, TabMeta, TxCbWrapper};
+use crate::db::{Bin, TabKV, SResult, IterResult, KeyIterResult, NextResult, Event, Filter, TxState, Iter, RwLog, Bon, TabMeta, CommitResult, DBResult};
 use crate::tabs::{TabLog, Tabs, Prepare};
 use crate::db::BuildDbType;
 use crate::tabs::TxnType;
-use pi_store::log_store::log_file::{PairLoader, LogMethod, LogFile};
-
-use r#async::rt::multi_thread::{MultiTaskPool, MultiTaskRuntime};
-use r#async::lock::spin_lock::SpinLock;
-use futures::channel::oneshot::channel;
-
-use bon::{ ReadBuffer, WriteBuffer };
-use num_cpus;
 
 lazy_static! {
 	pub static ref STORE_RUNTIME: MultiTaskRuntime<()> = {
@@ -45,7 +36,7 @@ lazy_static! {
 * 基于file log的数据库
 */
 #[derive(Clone)]
-pub struct LogFileDB(Arc<RwLock<Tabs>>);
+pub struct LogFileDB(Arc<Tabs>);
 
 impl LogFileDB {
 	/**
@@ -59,20 +50,20 @@ impl LogFileDB {
             let _ = fs::create_dir(db_path.to_string());
 		}
 
-		LogFileDB(Arc::new(RwLock::new(Tabs::new())))
+		LogFileDB(Arc::new(Tabs::new()))
 	}
 
-	pub async fn open(tab: &Atom) -> Option<SResult<LogFileTab>> {
-		Some(Ok(LogFileTab::new(tab).await))
+	pub async fn open(tab: &Atom) -> SResult<LogFileTab> {
+		Ok(LogFileTab::new(tab).await)
 	}
 
 	// 拷贝全部的表
 	pub async fn tabs_clone(&self) -> Arc<Self> {
-		Arc::new(LogFileDB(Arc::new(RwLock::new(self.0.read().await.clone_map()))))
+		Arc::new(LogFileDB(Arc::new(self.0.clone_map())))
 	}
 	// 列出全部的表
 	pub async fn list(&self) -> Box<dyn Iterator<Item=Atom>> {
-		Box::new(self.0.read().await.list())
+		Box::new(self.0.list().await)
 	}
 	// 获取该库对预提交后的处理超时时间, 事务会用最大超时时间来预提交
 	pub fn timeout(&self) -> usize {
@@ -80,11 +71,11 @@ impl LogFileDB {
 	}
 	// 表的元信息
 	pub async fn tab_info(&self, tab_name: &Atom) -> Option<Arc<TabMeta>> {
-		self.0.read().await.get(tab_name)
+		self.0.get(tab_name).await
 	}
 	// 获取当前表结构快照
 	pub async fn snapshot(&self) -> Arc<LogFileDBSnapshot> {
-		Arc::new(LogFileDBSnapshot(self.clone(), Mutex::new(self.0.read().await.snapshot())))
+		Arc::new(LogFileDBSnapshot(self.clone(), Mutex::new(self.0.snapshot().await)))
 	}
 }
 
@@ -101,7 +92,7 @@ impl LogFileDBSnapshot {
 		self.1.lock().await.get(tab_name)
 	}
 	// 检查该表是否可以创建
-	pub fn check(&self, _tab: &Atom, _meta: &Option<Arc<TabMeta>>) -> SResult<()> {
+	pub fn check(&self, _tab: &Atom, _meta: &Option<Arc<TabMeta>>) -> DBResult {
 		Ok(())
 	}
 	// 新增 修改 删除 表
@@ -109,7 +100,7 @@ impl LogFileDBSnapshot {
 		self.1.lock().await.alter(tab_name, meta)
 	}
 	// 创建指定表的表事务
-	pub async fn tab_txn(&self, tab_name: &Atom, id: &Guid, writable: bool) -> Option<SResult<TxnType>> {
+	pub async fn tab_txn(&self, tab_name: &Atom, id: &Guid, writable: bool) -> SResult<TxnType> {
 		self.1.lock().await.build(BuildDbType::LogFileDB, tab_name, id, writable).await
 	}
 	// 创建一个meta事务
@@ -117,16 +108,16 @@ impl LogFileDBSnapshot {
 		Arc::new(LogFileMetaTxn)
 	}
 	// 元信息的预提交
-	pub async fn prepare(&self, id: &Guid) -> SResult<()>{
-		(self.0).0.write().await.prepare(id, &mut *self.1.lock().await)
+	pub async fn prepare(&self, id: &Guid) -> DBResult{
+		(self.0).0.prepare(id, &mut *self.1.lock().await).await
 	}
 	// 元信息的提交
 	pub async fn commit(&self, id: &Guid){
-		(self.0).0.write().await.commit(id)
+		(self.0).0.commit(id).await
 	}
 	// 回滚
 	pub async fn rollback(&self, id: &Guid){
-		(self.0).0.write().await.rollback(id)
+		(self.0).0.rollback(id).await
 	}
 	// 库修改通知
 	pub fn notify(&self, _event: Event) {}
@@ -139,7 +130,7 @@ pub struct FileMemTxn {
 	tab: LogFileTab,
 	root: BinMap,
 	old: BinMap,
-	rwlog: FnvHashMap<Bin, RwLog>,
+	rwlog: XHashMap<Bin, RwLog>,
 	state: TxState,
 }
 
@@ -157,7 +148,7 @@ impl FileMemTxn {
 			root: root.clone(),
 			tab,
 			old: root,
-			rwlog: FnvHashMap::with_capacity_and_hasher(0, Default::default()),
+			rwlog: XHashMap::with_capacity_and_hasher(0, Default::default()),
 			state: TxState::Ok,
 		};
 		return RefLogFileTxn(Mutex::new(txn))
@@ -182,14 +173,14 @@ impl FileMemTxn {
 		}
 	}
 	//插入/修改数据
-	pub async fn upsert(&mut self, key: Bin, value: Bin) -> SResult<()> {
+	pub async fn upsert(&mut self, key: Bin, value: Bin) -> DBResult {
 		self.root.upsert(Bon::new(key.clone()), value.clone(), false);
 		self.rwlog.insert(key.clone(), RwLog::Write(Some(value.clone())));
 
 		Ok(())
 	}
 	//删除
-	pub async fn delete(&mut self, key: Bin) -> SResult<()> {
+	pub async fn delete(&mut self, key: Bin) -> DBResult {
 		self.root.delete(&Bon::new(key.clone()), false);
 		self.rwlog.insert(key, RwLog::Write(None));
 
@@ -197,19 +188,18 @@ impl FileMemTxn {
 	}
 
 	//预提交
-	pub async fn prepare1(&mut self) -> SResult<()> {
-		let mut tab = self.tab.0.lock().await;
+	pub async fn prepare_inner(&mut self) -> DBResult {
 		//遍历事务中的读写日志
 		for (key, rw_v) in self.rwlog.iter() {
 			//检查预提交是否冲突
-			match tab.prepare.try_prepare(key, rw_v) {
+			match self.tab.0.lock().await.prepare.try_prepare(key, rw_v) {
 				Ok(_) => (),
 				Err(s) => return Err(s),
 			};
 			//检查Tab根节点是否改变
-			if tab.root.ptr_eq(&self.old) == false {
+			if self.tab.0.lock().await.root.ptr_eq(&self.old) == false {
 				let key = Bon::new(key.clone());
-				match tab.root.get(&key) {
+				match self.tab.0.lock().await.root.get(&key) {
 					Some(r1) => match self.old.get(&key) {
 						Some(r2) if (r1 as *const Bin) == (r2 as *const Bin) => (),
 						_ => return Err(String::from("parpare conflicted value diff"))
@@ -221,22 +211,21 @@ impl FileMemTxn {
 				}
 			}
 		}
-		let rwlog = mem::replace(&mut self.rwlog, FnvHashMap::with_capacity_and_hasher(0, Default::default()));
+		let rwlog = mem::replace(&mut self.rwlog, XHashMap::with_capacity_and_hasher(0, Default::default()));
 		//写入预提交
-		tab.prepare.insert(self.id.clone(), rwlog);
+		self.tab.0.lock().await.prepare.insert(self.id.clone(), rwlog);
 
 		return Ok(())
 	}
 
-	// 同时异步存储数据到log file 中
-	//提交
-	pub async fn commit1(&mut self) -> CommitResult {
-		let mut tab = self.tab.0.lock().await;
-		let log = match tab.prepare.remove(&self.id) {
+	// 内部提交方法
+	pub async fn commit_inner(&mut self) -> CommitResult {
+		let logs = self.tab.0.lock().await.prepare.remove(&self.id);
+		let logs = match logs {
 			Some(rwlog) => {
-				let root_if_eq = tab.root.ptr_eq(&self.old);
+				let root_if_eq = self.tab.0.lock().await.root.ptr_eq(&self.old);
 				//判断根节点是否相等
-				if root_if_eq == false {
+				if !root_if_eq {
 					for (k, rw_v) in rwlog.iter() {
 						match rw_v {
 							RwLog::Read => (),
@@ -244,10 +233,10 @@ impl FileMemTxn {
 								let k = Bon::new(k.clone());
 								match rw_v {
 									RwLog::Write(None) => {
-										tab.root.delete(&k, false);
+										self.tab.0.lock().await.root.delete(&k, false);
 									},
 									RwLog::Write(Some(v)) => {
-										tab.root.upsert(k.clone(), v.clone(), false);
+										self.tab.0.lock().await.root.upsert(k.clone(), v.clone(), false);
 									},
 									_ => (),
 								}
@@ -255,16 +244,16 @@ impl FileMemTxn {
 						}
 					}
 				} else {
-					tab.root = self.root.clone();
+					self.tab.0.lock().await.root = self.root.clone();
 				}
 				rwlog
-			},
-			None => return Some(Err(String::from("error prepare null")))
+			}
+			None => return Err(String::from("error prepare null"))
 		};
 
 		let async_tab = self.tab.1.clone();
 
-		for (k, rw_v) in log {
+		for (k, rw_v) in &logs {
 			match rw_v {
 				RwLog::Read => {},
 				_ => {
@@ -272,13 +261,13 @@ impl FileMemTxn {
 						RwLog::Write(None) => {
 							debug!("delete key = {:?}", k);
 							if let Err(_) =  async_tab.remove(k.to_vec()).await {
-								return Some(Err("remove error".to_string()))
+								return Err("remove error".to_string())
 							}
 						}
 						RwLog::Write(Some(v)) => {
 							debug!("insert k = {:?}, v = {:?}", k, v);
 							if let Err(_) = async_tab.write(k.to_vec(), v.to_vec()).await {
-								return Some(Err("write error".to_string()))
+								return Err("write error".to_string())
 							}
 						}
 						_ => {}
@@ -286,10 +275,10 @@ impl FileMemTxn {
 				}
 			}
 		}
-		None
+		Ok(logs)
 	}
 	//回滚
-	pub async fn rollback1(&mut self) -> SResult<()> {
+	pub async fn rollback_inner(&mut self) -> DBResult {
 		let mut tab = self.tab.0.lock().await;
 		tab.prepare.remove(&self.id);
 
@@ -306,14 +295,14 @@ impl RefLogFileTxn {
 	pub async fn prepare(&self, _timeout: usize) -> DBResult {
 		let mut txn = self.0.lock().await;
 		txn.state = TxState::Preparing;
-		match txn.prepare1().await {
+		match txn.prepare_inner().await {
 			Ok(()) => {
 				txn.state = TxState::PreparOk;
-				return Some(Ok(()))
+				return Ok(())
 			},
 			Err(e) => {
 				txn.state = TxState::PreparFail;
-				return Some(Err(e.to_string()))
+				return Err(e.to_string())
 			},
 		}
 	}
@@ -321,31 +310,36 @@ impl RefLogFileTxn {
 	pub async fn commit(&self) -> CommitResult {
 		let mut txn = self.0.lock().await;
 		txn.state = TxState::Committing;
-		match txn.commit1().await {
-			Some(Ok(log)) => {
+		match txn.commit_inner().await {
+			Ok(log) => {
 				txn.state = TxState::Commited;
-				return Some(Ok(log))
+				return Ok(log)
 			},
-			Some(Err(e)) => return Some(Err(e.to_string())),
-			None => None
+			Err(e) => {
+				txn.state = TxState::CommitFail;
+				return Err(e.to_string())
+			}
 		}
 	}
 	// 回滚一个事务
 	pub async fn rollback(&self) -> DBResult {
 		let mut txn = self.0.lock().await;
 		txn.state = TxState::Rollbacking;
-		match txn.rollback1().await {
+		match txn.rollback_inner().await {
 			Ok(()) => {
 				txn.state = TxState::Rollbacked;
-				return Some(Ok(()))
+				return Ok(())
 			},
-			Err(e) => return Some(Err(e.to_string())),
+			Err(e) => {
+				txn.state = TxState::RollbackFail;
+				return Err(e.to_string())
+			}
 		}
 	}
 
 	// 键锁，key可以不存在，根据lock_time的值决定是锁还是解锁
 	pub async fn key_lock(&self, _arr: Arc<Vec<TabKV>>, _lock_time: usize, _readonly: bool) -> DBResult {
-		None
+		Ok(())
 	}
 	// 查询
 	pub async fn query(
@@ -353,11 +347,10 @@ impl RefLogFileTxn {
 		arr: Arc<Vec<TabKV>>,
 		_lock_time: Option<usize>,
 		_readonly: bool
-	) -> Option<SResult<Vec<TabKV>>> {
-		let mut txn = self.0.lock().await;
+	) -> SResult<Vec<TabKV>> {
 		let mut value_arr = Vec::new();
 		for tabkv in arr.iter() {
-			let value = match txn.get(tabkv.key.clone()).await {
+			let value = match self.0.lock().await.get(tabkv.key.clone()).await {
 				Some(v) => Some(v),
 				_ => None
 			};
@@ -372,31 +365,24 @@ impl RefLogFileTxn {
 				}
 			)
 		}
-		Some(Ok(value_arr))
+		Ok(value_arr)
 	}
 	// 修改，插入、删除及更新
 	pub async fn modify(&self, arr: Arc<Vec<TabKV>>, _lock_time: Option<usize>, _readonly: bool) -> DBResult {
-		let mut txn = self.0.lock().await;
 		for tabkv in arr.iter() {
 			if tabkv.value == None {
-				match txn.delete(tabkv.key.clone()).await {
-				Ok(_) => (),
-				Err(e) => 
-					{
-						return Some(Err(e.to_string()))
-					},
+				match self.0.lock().await.delete(tabkv.key.clone()).await {
+					Ok(_) => (),
+					Err(e) => return Err(e.to_string())
 				};
 			} else {
-				match txn.upsert(tabkv.key.clone(), tabkv.value.clone().unwrap()).await {
-				Ok(_) => (),
-				Err(e) =>
-					{
-						return Some(Err(e.to_string()))
-					},
+				match self.0.lock().await.upsert(tabkv.key.clone(), tabkv.value.clone().unwrap()).await {
+					Ok(_) => (),
+					Err(e) => return Err(e.to_string())
 				};
 			}
 		}
-		Some(Ok(()))
+		Ok(())
 	}
 	// 迭代
 	pub async fn iter(
@@ -405,7 +391,7 @@ impl RefLogFileTxn {
 		key: Option<Bin>,
 		descending: bool,
 		filter: Filter
-	) -> Option<IterResult> {
+	) -> IterResult {
 		let b = self.0.lock().await;
 		let key = match key {
 			Some(k) => Some(Bon::new(k)),
@@ -416,7 +402,7 @@ impl RefLogFileTxn {
 			None => None,
 		};
 
-		Some(Ok(Box::new(MemIter::new(tab, b.root.clone(), b.root.iter( key, descending), filter))))
+		Ok(Box::new(MemIter::new(tab, b.root.clone(), b.root.iter( key, descending), filter)))
 	}
 	// 迭代
 	pub async fn key_iter(
@@ -424,7 +410,7 @@ impl RefLogFileTxn {
 		key: Option<Bin>,
 		descending: bool,
 		filter: Filter
-	) -> Option<KeyIterResult> {
+	) -> KeyIterResult {
 		let b = self.0.lock().await;
 		let key = match key {
 			Some(k) => Some(Bon::new(k)),
@@ -435,7 +421,7 @@ impl RefLogFileTxn {
 			None => None,
 		};
 		let tab = b.tab.0.lock().await.tab.clone();
-		Some(Ok(Box::new(MemKeyIter::new(&tab, b.root.clone(), b.root.keys(key, descending), filter))))
+		Ok(Box::new(MemKeyIter::new(&tab, b.root.clone(), b.root.keys(key, descending), filter)))
 	}
 	// 索引迭代
 	pub fn index(
@@ -445,13 +431,13 @@ impl RefLogFileTxn {
 		_key: Option<Bin>,
 		_descending: bool,
 		_filter: Filter,
-	) -> Option<IterResult> {
-		None
+	) -> IterResult {
+		Err("not implemeted".to_string())
 	}
 	// 表的大小
-	pub async fn tab_size(&self) -> Option<SResult<usize>> {
+	pub async fn tab_size(&self) -> SResult<usize> {
 		let txn = self.0.lock().await;
-		Some(Ok(txn.root.size()))
+		Ok(txn.root.size())
 	}
 }
 
@@ -548,16 +534,16 @@ pub struct LogFileMetaTxn;
 
 impl LogFileMetaTxn {
 	// 创建表、修改指定表的元数据
-	pub async fn alter(&self, _tab: &Atom, _meta: Option<Arc<TabMeta>>) -> DBResult{
-		Some(Ok(()))
+	pub async fn alter(&self, _tab: &Atom, _meta: Option<Arc<TabMeta>>) -> DBResult {
+		Ok(())
 	}
 	// 快照拷贝表
-	pub async fn snapshot(&self, _tab: &Atom, _from: &Atom) -> DBResult{
-		Some(Ok(()))
+	pub async fn snapshot(&self, _tab: &Atom, _from: &Atom) -> DBResult {
+		Ok(())
 	}
 	// 修改指定表的名字
 	pub async fn rename(&self, _tab: &Atom, _new_name: &Atom) -> DBResult {
-		Some(Ok(()))
+		Ok(())
 	}
 
 	// 获得事务的状态
@@ -566,15 +552,15 @@ impl LogFileMetaTxn {
 	}
 	// 预提交一个事务
 	pub async fn prepare(&self, _timeout: usize) -> DBResult {
-		Some(Ok(()))
+		Ok(())
 	}
 	// 提交一个事务
 	pub async fn commit(&self) -> CommitResult {
-		Some(Ok(FnvHashMap::with_capacity_and_hasher(0, Default::default())))
+		Ok(XHashMap::with_capacity_and_hasher(0, Default::default()))
 	}
 	// 回滚一个事务
 	pub async fn rollback(&self) -> DBResult {
-		Some(Ok(()))
+		Ok(())
 	}
 }
 
@@ -675,7 +661,7 @@ unsafe impl Sync for LogFileTab {}
 impl LogFileTab {
 	async fn new(tab: &Atom) -> Self {
 		let mut file_mem_tab = MemeryTab {
-			prepare: Prepare::new(FnvHashMap::with_capacity_and_hasher(0, Default::default())),
+			prepare: Prepare::new(XHashMap::with_capacity_and_hasher(0, Default::default())),
 			root: OrdMap::<Tree<Bon, Bin>>::new(None),
 			tab: tab.clone(),
 		};
@@ -686,42 +672,38 @@ impl LogFileTab {
 		let tab_name_clone = tab.clone();
 		path.push(db_path);
 		path.push(tab_name.clone().to_string());
-		let (s, r) = channel();
 
-		// 异步加载数据， 通过channel 同步
+		let async_value = AsyncValue::new(AsyncRuntime::Multi(STORE_RUNTIME.clone()));
+		let async_value_clone = async_value.clone();
+
 		let _ = STORE_RUNTIME.spawn(STORE_RUNTIME.alloc(), async move {
 			match AsyncLogFileStore::open(path, 8000, 200 * 1024 * 1024).await {
 				Err(e) => {
 					error!("!!!!!!open table = {:?} failed, e: {:?}", tab_name, e);
 				},
 				Ok(store) => {
-					// 数据加载完毕，通过channel返回句柄
-					let _ = s.send(store);
+					async_value_clone.set(store);
 				}
 			}
 		});
-		
-		match r.await {
-			Ok(store) => {
-				let mut root= OrdMap::<Tree<Bon, Bin>>::new(None);
-				let mut load_size = 0;
-				let start_time = Instant::now();
-				let map = store.map.lock();
-				for (k, v) in map.iter() {
-					load_size += v.len();
-					root.upsert(Bon::new(Arc::new(k.clone())), Arc::new(v.to_vec()), false);
-				}
-				file_mem_tab.root = root;
-				debug!("====> load tab: {:?} size: {:?}byte time elapsed: {:?} <====", tab_name_clone, load_size, start_time.elapsed());
 
-				return LogFileTab(Arc::new(Mutex::new(file_mem_tab)), store);
-			}
-			Err(e) => {
-				panic!("LogFileTab::new failed, error = {:?}", e);
-			}
+		let store = async_value.await;
+
+		let mut root= OrdMap::<Tree<Bon, Bin>>::new(None);
+		let mut load_size = 0;
+		let start_time = Instant::now();
+		let map = store.map.lock();
+		for (k, v) in map.iter() {
+			load_size += v.len();
+			root.upsert(Bon::new(Arc::new(k.clone())), Arc::new(v.to_vec()), false);
 		}
+		file_mem_tab.root = root;
+		debug!("====> load tab: {:?} size: {:?}byte time elapsed: {:?} <====", tab_name_clone, load_size, start_time.elapsed());
+
+		return LogFileTab(Arc::new(Mutex::new(file_mem_tab)), store);
 
 	}
+
 	pub async fn transaction(&self, id: &Guid, writable: bool) -> RefLogFileTxn {
 		FileMemTxn::new(self.clone(), id, writable).await
 	}

@@ -10,7 +10,6 @@ lazy_static = "1.3"
 fnv = "1.0.3"
 parking_lot = {version = "0.6.4", features = ["nightly"]}
 crc = "*"
-crossbeam-channel = "0.3.4"
 atom = {path = "../pi_lib/atom"}
 guid = {path = "../pi_lib/guid"}
 bon = {path = "../pi_lib/bon"}
