@@ -17,7 +17,7 @@ pub type Bin = Arc<Vec<u8>>;
 pub type SResult<T> = Result<T, String>;
 pub type DBResult = SResult<()>;
 pub type CommitResult = SResult<XHashMap<Bin, RwLog>>;
-pub type IterResult = SResult<Box<dyn Iter<Item = (Bin, Bin)>>>;
+pub type IterResult = SResult<Box<dyn Iter<Item = (Bin, Bin)> + Send>>;
 pub type KeyIterResult = SResult<Box<dyn Iter<Item = Bin>>>;
 pub type NextResult<T> = SResult<Option<T>>;
 
