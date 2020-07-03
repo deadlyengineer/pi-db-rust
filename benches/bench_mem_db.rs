@@ -290,7 +290,7 @@ async fn test_mem_db_concurrent_write(rt: MultiTaskRuntime<()>) {
 	let mut tr = mgr.transaction(true).await;
 	let meta = TabMeta::new(sinfo::EnumType::Str, sinfo::EnumType::Str);
 
-	tr.alter(&Atom::from("memory"), &Atom::from("hello"), Some(Arc::new(meta)));
+	tr.alter(&Atom::from("memory"), &Atom::from("hello"), Some(Arc::new(meta))).await;
 
 	tr.prepare().await;
 	tr.commit().await;
