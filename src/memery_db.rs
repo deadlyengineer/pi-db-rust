@@ -389,7 +389,10 @@ impl Txn for RefMemeryTxn {
 				txn.state = TxState::Commited;
 				return Some(Ok(log))
 			},
-			Err(e) => return Some(Err(e.to_string())),
+			Err(e) => {
+				txn.state = TxState::CommitFail;
+				return Some(Err(e.to_string()))
+			}
 		}
 	}
 	// 回滚一个事务
@@ -401,7 +404,10 @@ impl Txn for RefMemeryTxn {
 				txn.state = TxState::Rollbacked;
 				return Some(Ok(()))
 			},
-			Err(e) => return Some(Err(e.to_string())),
+			Err(e) => {
+				txn.state = TxState::RollbackFail;
+				return Some(Err(e.to_string()))
+			}
 		}
 	}
 }
