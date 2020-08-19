@@ -655,6 +655,7 @@ impl Tx {
 									_ => (),
 								}
 							}
+							self.state = TxState::Commited
 						}
 						_ => self.state = TxState::CommitFail
 					};
