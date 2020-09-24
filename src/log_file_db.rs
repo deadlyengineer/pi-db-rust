@@ -54,6 +54,12 @@ impl LogFileDB {
 	}
 
 	pub async fn open(tab: &Atom) -> SResult<LogFileTab> {
+		// 确定这个表的分叉关系： 是否是从某个表分叉而来，如果是从其他表分叉而来，需要先加载其他表
+		// 如何处理分叉之后元信息的变动？ 现在的是js层处理序列化与反序列化的问题
+	
+		// 这里可能出现会重复加载某些表的问题，比如说B，C表是从A表分叉而来，那么这里就会加载A表两次。
+		// 所以是否还需要懒加载？ 懒加载的话就可能出现某个表加载多次的问题。
+		// 解决方法： 有分叉关系的表不进行懒加载，没有分叉过的表进行懒加载。创建数据库的时候就要先加载分叉的表。
 		Ok(LogFileTab::new(tab).await)
 	}
 
@@ -284,6 +290,11 @@ impl FileMemTxn {
 
 		Ok(())
 	}
+
+	/// 强制产生分裂
+	pub async fn force_fork_inner(&self) -> Result<()> {
+		self.tab.1.clone().force_fork().await
+	}
 }
 
 impl RefLogFileTxn {
@@ -335,6 +346,11 @@ impl RefLogFileTxn {
 				return Err(e.to_string())
 			}
 		}
+	}
+
+	/// 强制产生分裂
+	pub async fn force_fork(&self) -> Result<()> {
+		self.0.lock().await.force_fork_inner().await
 	}
 
 	// 键锁，key可以不存在，根据lock_time的值决定是锁还是解锁
@@ -575,11 +591,11 @@ unsafe impl Send for AsyncLogFileStore {}
 unsafe impl Sync for AsyncLogFileStore {}
 
 impl PairLoader for AsyncLogFileStore {
-    fn is_require(&self, key: &Vec<u8>) -> bool {
+    fn is_require(&self, log_file: Option<&PathBuf>, key: &Vec<u8>) -> bool {
 		!self.removed.lock().contains_key(key) && !self.map.lock().contains_key(key)
     }
 
-    fn load(&mut self, _method: LogMethod, key: Vec<u8>, value: Option<Vec<u8>>) {
+    fn load(&mut self, log_file: Option<&PathBuf>, method: LogMethod, key: Vec<u8>, value: Option<Vec<u8>>) {
 		if let Some(value) = value {
 			self.map.lock().insert(key, value.into());
 		} else {
@@ -600,7 +616,7 @@ impl AsyncLogFileStore {
 					log_file: file.clone()
 				};
 
-                if let Err(e) = file.load(&mut store, true).await {
+                if let Err(e) = file.load(&mut store, None, true).await {
                     Err(e)
                 } else {
                     //初始化内存数据成功
@@ -612,7 +628,7 @@ impl AsyncLogFileStore {
 
 	async fn write(&self, key: Vec<u8>, value: Vec<u8>) -> Result<Option<Vec<u8>>> {
         let id = self.log_file.append(LogMethod::PlainAppend, key.as_ref(), value.as_ref());
-        if let Err(e) = self.log_file.delay_commit(id, 10).await {
+        if let Err(e) = self.log_file.delay_commit(id, false, 10).await {
             Err(e)
         } else {
             if let Some(value) = self.map.lock().insert(key, value.into()) {
@@ -634,7 +650,7 @@ impl AsyncLogFileStore {
 
 	pub async fn remove(&self, key: Vec<u8>) -> Result<Option<Vec<u8>>> {
         let id = self.log_file.append(LogMethod::Remove, key.as_ref(), &[]);
-        if let Err(e) = self.log_file.delay_commit(id, 10).await {
+        if let Err(e) = self.log_file.delay_commit(id, false, 10).await {
             Err(e)
         } else {
             if let Some(value) = self.map.lock().remove(&key) {
@@ -649,7 +665,17 @@ impl AsyncLogFileStore {
         self.map.lock().iter().last().map(|(k, _)| {
             k.clone()
         })
-    }
+	}
+	
+	/// 强制产生分裂
+	pub async fn force_fork(&self) -> Result<()> {
+		let id = self.log_file.append(LogMethod::PlainAppend, &[], &[]);
+		if let Err(e) = self.log_file.commit(id, true, false).await {
+			Err(e)
+		} else {
+			Ok(())
+		}
+	}
 }
 
 #[derive(Clone)]

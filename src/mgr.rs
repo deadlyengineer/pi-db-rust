@@ -13,6 +13,7 @@ use ordmap::asbtree::{Tree, new};
 use atom::Atom;
 use guid::{Guid, GuidGen};
 use r#async::lock::mutex_lock::Mutex;
+use bon::{ReadBuffer, Decode, Encode, WriteBuffer, ReadBonErr};
 
 use crate::db::{SResult, IterResult, KeyIterResult, Filter, TabKV, TxCallback, TxState, Event, Bin, RwLog, TabMeta, CommitResult, DBResult};
 use crate::memery_db::{MemDBSnapshot, MemDB, RefMemeryTxn, MemeryMetaTxn};
@@ -28,7 +29,9 @@ use crate::log_file_db::{LogFileDBSnapshot, RefLogFileTxn, LogFileMetaTxn, LogFi
 #[derive(Clone)]
 pub struct Mgr {
 	ware_map: Arc<Mutex<WareMap>>,
-	guid: Arc<GuidGen>
+	guid: Arc<GuidGen>,
+	// 所有的表分叉信息, 根据这些信息, 计算加载顺序
+	// forks: XHashMap<String, TableMetaInfo>
 }
 
 unsafe impl Send for Mgr {}
@@ -47,6 +50,18 @@ impl Mgr {
 			ware_map: Arc::new(Mutex::new(WareMap::new())),
 			guid: Arc::new(gen)
 		}
+	}
+
+	/// 首先加载有分叉关系的表, 这些有分叉关系的表不要进行懒加载,否则可能被加载多次
+	/// 其他没有分叉关系的表进行懒加载
+	/// 分叉表继续分叉该怎么处理？ 找到分叉的根表，再加载数据
+	pub fn load_fork_tab(&self) {
+
+	}
+
+	/// 构建分叉树
+	pub fn build_fork_tree(&self) {
+
 	}
 
 	/**
@@ -900,6 +915,17 @@ impl Tr {
 	*/
 	pub fn get_state(&self) -> TxState {
 		self.state.clone()
+	}
+
+	/// 创建 tab_name 的一个分叉表
+	/// 原表的log产生分裂，生成一个新的log文件id，之前的数据就是两个表的公共数据
+	pub async fn fork_tab(&self, tab_name: Atom, fork_tab_name: Atom, new_meta: TabMeta) {
+		// 创建新的表数据存储目录, 新表的写入在这个目录下创建新文件
+		// 这里要保存表的分叉关系
+		// 原来表的写入应该在新的log文件中写入，分叉之前的log文件已经变为只读
+
+		// tab_name 是已经存在的表， fork_tab_name 是分叉后的表
+		// 这里需要知道tab_name分叉之后的 log_id
 	}
 
 	/**

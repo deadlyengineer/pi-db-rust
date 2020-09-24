@@ -31,10 +31,31 @@ pub type Filter = Option<bool>;
 /**
 * 表的元信息
 */
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TabMeta {
 	pub k: EnumType,
 	pub v: EnumType
+}
+
+impl PartialEq for TabMeta {
+	fn eq(&self, other: &Self) -> bool {
+		if self.k == other.k && self.v == other.v {
+			true
+		} else {
+			false
+		}
+	}
+}
+
+impl Eq for TabMeta {}
+
+impl Default for TabMeta {
+	fn default() -> Self {
+		TabMeta {
+			k: EnumType::Str,
+			v: EnumType::Str
+		}
+	}
 }
 
 impl TabMeta {
