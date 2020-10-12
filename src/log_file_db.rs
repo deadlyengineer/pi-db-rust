@@ -605,8 +605,8 @@ impl PairLoader for AsyncLogFileStore {
 }
 
 impl AsyncLogFileStore {
-	async fn open<P: AsRef<Path> + std::fmt::Debug>(path: P, buf_len: usize, file_len: usize) -> Result<Self> {
-		match LogFile::open(STORE_RUNTIME.clone(), path, buf_len, file_len).await {
+	async fn open<P: AsRef<Path> + std::fmt::Debug>(path: P, buf_len: usize, file_len: usize, log_file_index: Option<usize>) -> Result<Self> {
+		match LogFile::open(STORE_RUNTIME.clone(), path, buf_len, file_len, log_file_index).await {
             Err(e) => Err(e),
             Ok(file) => {
                 //打开指定路径的日志存储成功
@@ -703,7 +703,7 @@ impl LogFileTab {
 		let async_value_clone = async_value.clone();
 
 		let _ = STORE_RUNTIME.spawn(STORE_RUNTIME.alloc(), async move {
-			match AsyncLogFileStore::open(path, 8000, 200 * 1024 * 1024).await {
+			match AsyncLogFileStore::open(path, 8000, 200 * 1024 * 1024, None).await {
 				Err(e) => {
 					error!("!!!!!!open table = {:?} failed, e: {:?}", tab_name, e);
 				},
