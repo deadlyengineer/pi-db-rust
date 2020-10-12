@@ -292,7 +292,7 @@ impl FileMemTxn {
 	}
 
 	/// 强制产生分裂
-	pub async fn force_fork_inner(&self) -> DBResult {
+	pub async fn force_fork_inner(&self) -> Result<usize> {
 		self.tab.1.clone().force_fork().await
 	}
 }
@@ -349,7 +349,7 @@ impl RefLogFileTxn {
 	}
 
 	/// 强制产生分裂
-	pub async fn force_fork(&self) -> DBResult {
+	pub async fn force_fork(&self) -> Result<usize> {
 		self.0.lock().await.force_fork_inner().await
 	}
 
@@ -668,13 +668,8 @@ impl AsyncLogFileStore {
 	}
 	
 	/// 强制产生分裂
-	pub async fn force_fork(&self) -> DBResult {
-		let id = self.log_file.append(LogMethod::PlainAppend, &[], &[]);
-		if let Err(e) = self.log_file.commit(id, true, true).await {
-			Err(e.to_string())
-		} else {
-			Ok(())
-		}
+	pub async fn force_fork(&self) -> Result<usize> {
+		self.log_file.split().await
 	}
 }
 

@@ -725,7 +725,7 @@ impl DatabaseTabTxn {
 		}
 	}
 
-	pub async fn force_fork(&self) -> DBResult {
+	pub async fn force_fork(&self) -> std::io::Result<usize> {
 		match self {
 			DatabaseTabTxn::MemTabTxn(_) => unimplemented!(),
 			DatabaseTabTxn::LogFileTabTxn(txn) => {
@@ -965,7 +965,8 @@ impl Tr {
 			_ => return Err(String::from("WareNotFound"))
 		};
 
-		let _ = txn.force_fork().await;
+		let index = txn.force_fork().await;
+		println!("fork_index = {:?}", index);
 		self.modify(vec![tab], None, false).await
 	}
 
