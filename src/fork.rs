@@ -7,7 +7,7 @@ use bon::{Encode, Decode, WriteBuffer, ReadBuffer, ReadBonErr};
 use crate::db::TabMeta;
 
 lazy_static! {
-	static ref ALL_TABLES: Arc<Mutex<HashMap<Atom, TableMetaInfo>>> = Arc::new(Mutex::new(HashMap::new()));
+	pub static ref ALL_TABLES: Arc<Mutex<HashMap<Atom, TableMetaInfo>>> = Arc::new(Mutex::new(HashMap::new()));
 }
 
 /// TODO: 被分叉表和分叉表之间的字段转换， 可以用一个转换函数来描述
@@ -30,7 +30,7 @@ pub struct TableMetaInfo {
 	/// 根表, 是否需要这个字段？
 	pub(crate) root_parent: Option<Atom>,
 	/// 该表是从父表的哪个log file id分叉而来
-	pub(crate) parent_log_id: Option<u32>,
+	pub(crate) parent_log_id: Option<usize>,
 	/// 表的引用计数， 表示在log_id的地方产生了多少个分叉， 引用计数为0才可以安全删除这个表
 	pub(crate) ref_count_at: HashMap<usize, usize>
 }

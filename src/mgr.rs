@@ -18,7 +18,7 @@ use bon::{ReadBuffer, Decode, Encode, WriteBuffer, ReadBonErr};
 use crate::db::{SResult, IterResult, KeyIterResult, Filter, TabKV, TxCallback, TxState, Event, Bin, RwLog, TabMeta, CommitResult, DBResult};
 use crate::memery_db::{MemDBSnapshot, MemDB, RefMemeryTxn, MemeryMetaTxn};
 use crate::tabs::TxnType;
-use crate::log_file_db::{LogFileDBSnapshot, RefLogFileTxn, LogFileMetaTxn, LogFileDB};
+use crate::log_file_db::{LogFileDBSnapshot, RefLogFileTxn, LogFileMetaTxn, LogFileDB, STORE_RUNTIME};
 use crate::fork::TableMetaInfo;
 
 /**
@@ -930,29 +930,15 @@ impl Tr {
 	/// 创建 tab_name 的一个分叉表
 	/// 原表的log产生分裂，生成一个新的log文件id，之前的数据就是两个表的公共数据
 	pub async fn fork_tab(&mut self, tab_name: Atom, fork_tab_name: Atom, new_meta: TabMeta) -> DBResult {
+		// TODO: 判断表名是否有重复
+
 		// 创建新的表数据存储目录, 新表的写入在这个目录下创建新文件
 		// 这里要保存表的分叉关系
 		// 原来表的写入应该在新的log文件中写入，分叉之前的log文件已经变为只读
 
 		// tab_name 是已经存在的表， fork_tab_name 是分叉后的表
 		// 这里需要知道tab_name分叉之后的 log_id
-		let mut tmi = TableMetaInfo::new(fork_tab_name.clone(), new_meta);
-		tmi.parent = Some(tab_name.clone());
-
-		// TODO:
-		// tmi.root_parent = 
-		// tmi.parent_log_id = 
-
-		let mut wb = WriteBuffer::new();
-		tmi.encode(&mut wb);
-
-		let tab = TabKV {
-			ware: Atom::from("logfile"),
-			tab: Atom::from("tabs_meta"),
-			key: Arc::new(tab_name.clone().as_bytes().to_vec()),
-			value: Some(Arc::new(wb.bytes)),
-			index: 0
-		};
+		
 
 		let txn = match self.ware_log_map.get(&Atom::from("logfile")) {
 			Some(ware) => match ware.tab_txn(&tab_name, &self.id, self.writable).await {
@@ -965,8 +951,32 @@ impl Tr {
 			_ => return Err(String::from("WareNotFound"))
 		};
 
-		let index = txn.force_fork().await;
+		let index = match txn.force_fork().await {
+			Ok(idx) => idx,
+			Err(e) => return Err(e.to_string())
+		};
 		println!("fork_index = {:?}", index);
+
+		let mut tmi = TableMetaInfo::new(fork_tab_name.clone(), new_meta);
+		tmi.parent = Some(tab_name.clone());
+
+		// TODO:
+		// tmi.root_parent = 
+		tmi.parent_log_id = Some(index);
+
+		let mut wb = WriteBuffer::new();
+		tmi.encode(&mut wb);
+		let mut wb1 = WriteBuffer::new();
+		tab_name.encode(&mut wb1);
+
+		let tab = TabKV {
+			ware: Atom::from("logfile"),
+			tab: Atom::from("./testlogfile/tabs_meta"),
+			key: Arc::new(wb1.bytes),
+			value: Some(Arc::new(wb.bytes)),
+			index: 0
+		};
+		
 		self.modify(vec![tab], None, false).await
 	}
 

@@ -16,7 +16,7 @@ fn test_log_file_db() {
 
 	let _ = rt.spawn(rt.alloc(), async move {
 		let mgr = Mgr::new(GuidGen::new(0, 0));
-		let ware = DatabaseWare::new_log_file_ware(LogFileDB::new(Atom::from("./testlogfile"), 1024 * 1024 * 1024));
+		let ware = DatabaseWare::new_log_file_ware(LogFileDB::new(Atom::from("./testlogfile"), 1024 * 1024 * 1024).await);
 		let _ = mgr.register(Atom::from("logfile"), Arc::new(ware)).await;
 		let mut tr = mgr.transaction(true).await;
 
@@ -116,7 +116,7 @@ fn write_test_data() {
 
 	let _ = rt.spawn(rt.alloc(), async move {
 		let mgr = Mgr::new(GuidGen::new(0, 0));
-		let ware = DatabaseWare::new_log_file_ware(LogFileDB::new(Atom::from("./testlogfile"), 1024 * 1024 * 1024));
+		let ware = DatabaseWare::new_log_file_ware(LogFileDB::new(Atom::from("./testlogfile"), 1024 * 1024 * 1024).await);
 		let _ = mgr.register(Atom::from("logfile"), Arc::new(ware)).await;
 		let mut tr = mgr.transaction(true).await;
 
@@ -182,7 +182,7 @@ fn read_test_data() {
 
 	let _ = rt.spawn(rt.alloc(), async move {
 		let mgr = Mgr::new(GuidGen::new(0, 0));
-		let ware = DatabaseWare::new_log_file_ware(LogFileDB::new(Atom::from("./testlogfile"), 1024 * 1024 * 1024));
+		let ware = DatabaseWare::new_log_file_ware(LogFileDB::new(Atom::from("./testlogfile"), 1024 * 1024 * 1024).await);
 		let _ = mgr.register(Atom::from("logfile"), Arc::new(ware)).await;
 		let mut tr = mgr.transaction(true).await;
 

@@ -19,7 +19,7 @@ fn test_fork() {
 
 	let _ = rt.spawn(rt.alloc(), async move {
 		let mgr = Mgr::new(GuidGen::new(0, 0));
-		let ware = DatabaseWare::new_log_file_ware(LogFileDB::new(Atom::from("./testlogfile"), 1024 * 1024 * 1024));
+		let ware = DatabaseWare::new_log_file_ware(LogFileDB::new(Atom::from("./testlogfile"), 1024 * 1024 * 1024).await);
 		let _ = mgr.register(Atom::from("logfile"), Arc::new(ware)).await;
 
 		let mut tr = mgr.transaction(true).await;
@@ -59,9 +59,11 @@ fn test_fork() {
 		let tabs = tr3.list(&Atom::from("logfile")).await;
 		println!("tabs === {:?}", tabs);
 		let tm = TabMeta::new(sinfo::EnumType::Str, sinfo::EnumType::Str);
-		tr3.fork_tab(Atom::from("./testlogfile/hello"), Atom::from("./testlogfile/hello_frok"), tm).await;
-		tr3.prepare().await;
-		tr3.commit().await;
+		tr3.fork_tab(Atom::from("./testlogfile/hello"), Atom::from("./testlogfile/hello_fork"), tm).await;
+		let p = tr3.prepare().await;
+		println!("prepare ==== {:?}", p);
+		let c = tr3.commit().await;
+		println!("commit=== {:?}", c);
 
 	});
 

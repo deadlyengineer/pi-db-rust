@@ -67,7 +67,7 @@ async fn test_log_file_db_concurrent_read(rt: MultiTaskRuntime<()>) {
     let ware = DatabaseWare::new_log_file_ware(LogFileDB::new(
         Atom::from("./testlogfile"),
         1024 * 1024 * 1024,
-    ));
+    ).await);
     let _ = mgr.register(Atom::from("logfile"), Arc::new(ware)).await;
     let mut tr = mgr.transaction(true).await;
 
@@ -210,7 +210,7 @@ async fn test_log_file_db_concurrent_write(rt: MultiTaskRuntime<()>) {
     let ware = DatabaseWare::new_log_file_ware(LogFileDB::new(
         Atom::from("./testlogfile"),
         1024 * 1024 * 1024,
-    ));
+    ).await);
     let _ = mgr.register(Atom::from("logfile"), Arc::new(ware)).await;
     let mut tr = mgr.transaction(true).await;
 
@@ -353,7 +353,7 @@ async fn log_file_read() {
     let ware = DatabaseWare::new_log_file_ware(LogFileDB::new(
         Atom::from("./testlogfile"),
         1024 * 1024 * 1024,
-    ));
+    ).await);
     let _ = mgr.register(Atom::from("logfile"), Arc::new(ware)).await;
     let mut tr = mgr.transaction(true).await;
 
@@ -391,7 +391,7 @@ async fn log_file_write() {
     let ware = DatabaseWare::new_log_file_ware(LogFileDB::new(
         Atom::from("./testlogfile"),
         1024 * 1024 * 1024,
-    ));
+    ).await);
     let _ = mgr.register(Atom::from("logfile"), Arc::new(ware)).await;
     let mut tr = mgr.transaction(true).await;
 

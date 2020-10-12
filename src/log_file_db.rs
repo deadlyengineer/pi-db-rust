@@ -24,6 +24,8 @@ use crate::db::{Bin, TabKV, SResult, IterResult, KeyIterResult, NextResult, Even
 use crate::tabs::{TabLog, Tabs, Prepare};
 use crate::db::BuildDbType;
 use crate::tabs::TxnType;
+use crate::fork::{ALL_TABLES, TableMetaInfo};
+use bon::{Decode, ReadBuffer};
 
 lazy_static! {
 	pub static ref STORE_RUNTIME: MultiTaskRuntime<()> = {
@@ -45,9 +47,43 @@ impl LogFileDB {
 	* @param db_size 数据库文件最大大小
 	* @returns 返回基于file log的数据库
 	*/
-	pub fn new(db_path: Atom, db_size: usize) -> Self {
+	pub async fn new(db_path: Atom, db_size: usize) -> Self {
 		if !Path::new(&db_path.to_string()).exists() {
             let _ = fs::create_dir(db_path.to_string());
+		}
+
+		// 从元信息表加载所有表元信息
+		// let db_path = env::var("DB_PATH").unwrap_or("./".to_string());
+		let db_path = "./testlogfile";
+		let mut path = PathBuf::new();
+		let tab_name = "tabs_meta";
+		path.push(db_path);
+		path.push(tab_name.clone().to_string());
+
+		println!("path === {:?}", path);
+
+		let async_value = AsyncValue::new(AsyncRuntime::Multi(STORE_RUNTIME.clone()));
+		let async_value_clone = async_value.clone();
+
+		let _ = STORE_RUNTIME.spawn(STORE_RUNTIME.alloc(), async move {
+			match AsyncLogFileStore::open(path, 8000, 200 * 1024 * 1024, None).await {
+				Err(e) => {
+					error!("!!!!!!open table = {:?} failed, e: {:?}", "tabs_meta", e);
+				},
+				Ok(store) => {
+					println!("open ok");
+					async_value_clone.set(store);
+				}
+			}
+		});
+
+		let store = async_value.await;
+		let map = store.map.lock();
+		for (k, v) in map.iter() {
+			let tab_name = Atom::decode(&mut ReadBuffer::new(k, 0)).unwrap();
+			let meta = TableMetaInfo::decode(&mut ReadBuffer::new(v.clone().to_vec().as_ref(), 0)).unwrap();
+			println!("tab_name = {:?}, meta = {:?}", tab_name, meta);
+			ALL_TABLES.lock().unwrap().insert(tab_name, meta);
 		}
 
 		LogFileDB(Arc::new(Tabs::new()))
