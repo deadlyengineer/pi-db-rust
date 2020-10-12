@@ -22,17 +22,17 @@ lazy_static! {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TableMetaInfo {
 	/// 表名
-	tab_name: Atom,
+	pub(crate) tab_name: Atom,
 	/// key, value 类型
-	meta: TabMeta,
+	pub(crate) meta: TabMeta,
 	/// 父表, 一个表最多只有一个父表， 父表上可以分叉产生多个子表
-	parent: Option<Atom>,
+	pub(crate) parent: Option<Atom>,
 	/// 根表, 是否需要这个字段？
-	root_parent: Option<Atom>,
+	pub(crate) root_parent: Option<Atom>,
 	/// 该表是从父表的哪个log file id分叉而来
-	parent_log_id: Option<u32>,
+	pub(crate) parent_log_id: Option<u32>,
 	/// 表的引用计数， 表示在log_id的地方产生了多少个分叉， 引用计数为0才可以安全删除这个表
-	ref_count_at: HashMap<usize, usize>
+	pub(crate) ref_count_at: HashMap<usize, usize>
 }
 
 impl TableMetaInfo {

@@ -50,6 +50,12 @@ fn test_fork() {
 		tr2.modify(vec![item], None, false).await;
 		tr2.prepare().await;
 		tr2.commit().await;
+
+		let mut tr3 = mgr.transaction(true).await;
+		let tm = TabMeta::new(sinfo::EnumType::Str, sinfo::EnumType::Str);
+		tr3.fork_tab(Atom::from("hello"), Atom::from("hello_frok"), tm).await;
+		tr3.prepare().await;
+		tr3.commit().await;
 	});
 
 	thread::sleep(Duration::from_secs(3));

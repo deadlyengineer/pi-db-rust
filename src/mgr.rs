@@ -19,6 +19,7 @@ use crate::db::{SResult, IterResult, KeyIterResult, Filter, TabKV, TxCallback, T
 use crate::memery_db::{MemDBSnapshot, MemDB, RefMemeryTxn, MemeryMetaTxn};
 use crate::tabs::TxnType;
 use crate::log_file_db::{LogFileDBSnapshot, RefLogFileTxn, LogFileMetaTxn, LogFileDB};
+use crate::fork::TableMetaInfo;
 
 /**
 * 表库及事务管理器
@@ -723,6 +724,15 @@ impl DatabaseTabTxn {
 			}
 		}
 	}
+
+	pub async fn force_fork(&self) -> DBResult {
+		match self {
+			DatabaseTabTxn::MemTabTxn(_) => unimplemented!(),
+			DatabaseTabTxn::LogFileTabTxn(txn) => {
+				txn.force_fork().await
+			}
+		}
+	}
 }
 
 /**
@@ -919,13 +929,32 @@ impl Tr {
 
 	/// 创建 tab_name 的一个分叉表
 	/// 原表的log产生分裂，生成一个新的log文件id，之前的数据就是两个表的公共数据
-	pub async fn fork_tab(&self, tab_name: Atom, fork_tab_name: Atom, new_meta: TabMeta) {
+	pub async fn fork_tab(&mut self, tab_name: Atom, fork_tab_name: Atom, new_meta: TabMeta) {
 		// 创建新的表数据存储目录, 新表的写入在这个目录下创建新文件
 		// 这里要保存表的分叉关系
 		// 原来表的写入应该在新的log文件中写入，分叉之前的log文件已经变为只读
 
 		// tab_name 是已经存在的表， fork_tab_name 是分叉后的表
 		// 这里需要知道tab_name分叉之后的 log_id
+		let mut tmi = TableMetaInfo::new(fork_tab_name.clone(), new_meta);
+		tmi.parent = Some(tab_name.clone());
+
+		// TODO:
+		// tmi.root_parent = 
+		// tmi.parent_log_id = 
+
+		let mut wb = WriteBuffer::new();
+		tmi.encode(&mut wb);
+
+		let tab = TabKV {
+			ware: Atom::from("logfile"),
+			tab: Atom::from("tabs_meta"),
+			key: Arc::new(tab_name.as_bytes().to_vec()),
+			value: Some(Arc::new(wb.bytes)),
+			index: 0
+		};
+		let txn = self.tab_txns.get(&(Atom::from("logfile"), tab_name));
+		self.modify(vec![tab], None, false).await;
 	}
 
 	/**
