@@ -24,38 +24,45 @@ fn test_fork() {
 
 		let mut tr = mgr.transaction(true).await;
 		let meta = TabMeta::new(sinfo::EnumType::Str, sinfo::EnumType::Bin);
+		let meta1 = TabMeta::new(sinfo::EnumType::Str, sinfo::EnumType::Str);
 
 		// 创建一个用于存储元信息的表
 		tr.alter(&Atom::from("logfile"), &Atom::from("./testlogfile/tabs_meta"), Some(Arc::new(meta))).await;
+		tr.alter(&Atom::from("logfile"), &Atom::from("./testlogfile/hello"), Some(Arc::new(meta1))).await;
 		let p = tr.prepare().await;
 		tr.commit().await;
 
 		let mut wb = WriteBuffer::new();
 		wb.write_bin(b"hello", 0..5);
 
-		let tm = TabMeta::new(sinfo::EnumType::Str, sinfo::EnumType::Str);
-		let tmi = TableMetaInfo::new(Atom::from("hello"), tm);
-		let mut wb1 = WriteBuffer::new();
-		tmi.encode(&mut wb1);
+		// let tm = TabMeta::new(sinfo::EnumType::Str, sinfo::EnumType::Str);
+		// let tmi = TableMetaInfo::new(Atom::from("hello"), tm);
+		// let mut wb1 = WriteBuffer::new();
+		// tmi.encode(&mut wb1);
 
-		let item = TabKV {
-			ware: Atom::from("logfile"),
-			tab: Atom::from("./testlogfile/tabs_meta"),
-			key: Arc::new(wb.bytes.clone()),
-			value: Some(Arc::new(wb1.bytes)),
-			index: 0
-		};
+		// let item = TabKV {
+		// 	ware: Atom::from("logfile"),
+		// 	tab: Atom::from("./testlogfile/tabs_meta"),
+		// 	key: Arc::new(wb.bytes.clone()),
+		// 	value: Some(Arc::new(wb1.bytes)),
+		// 	index: 0
+		// };
 
-		let mut tr2 = mgr.transaction(true).await;
-		tr2.modify(vec![item], None, false).await;
-		tr2.prepare().await;
-		tr2.commit().await;
+		// let mut tr2 = mgr.transaction(true).await;
+		// tr2.modify(vec![item], None, false).await;
+		// tr2.prepare().await;
+		// tr2.commit().await;
 
+
+		// 需要开一个新的事务来执行分叉操作？？
 		let mut tr3 = mgr.transaction(true).await;
+		let tabs = tr3.list(&Atom::from("logfile")).await;
+		println!("tabs === {:?}", tabs);
 		let tm = TabMeta::new(sinfo::EnumType::Str, sinfo::EnumType::Str);
-		tr3.fork_tab(Atom::from("hello"), Atom::from("hello_frok"), tm).await;
+		tr3.fork_tab(Atom::from("./testlogfile/hello"), Atom::from("./testlogfile/hello_frok"), tm).await;
 		tr3.prepare().await;
 		tr3.commit().await;
+
 	});
 
 	thread::sleep(Duration::from_secs(3));

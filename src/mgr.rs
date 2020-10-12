@@ -929,7 +929,7 @@ impl Tr {
 
 	/// 创建 tab_name 的一个分叉表
 	/// 原表的log产生分裂，生成一个新的log文件id，之前的数据就是两个表的公共数据
-	pub async fn fork_tab(&mut self, tab_name: Atom, fork_tab_name: Atom, new_meta: TabMeta) {
+	pub async fn fork_tab(&mut self, tab_name: Atom, fork_tab_name: Atom, new_meta: TabMeta) -> DBResult {
 		// 创建新的表数据存储目录, 新表的写入在这个目录下创建新文件
 		// 这里要保存表的分叉关系
 		// 原来表的写入应该在新的log文件中写入，分叉之前的log文件已经变为只读
@@ -949,12 +949,24 @@ impl Tr {
 		let tab = TabKV {
 			ware: Atom::from("logfile"),
 			tab: Atom::from("tabs_meta"),
-			key: Arc::new(tab_name.as_bytes().to_vec()),
+			key: Arc::new(tab_name.clone().as_bytes().to_vec()),
 			value: Some(Arc::new(wb.bytes)),
 			index: 0
 		};
-		let txn = self.tab_txns.get(&(Atom::from("logfile"), tab_name));
-		self.modify(vec![tab], None, false).await;
+
+		let txn = match self.ware_log_map.get(&Atom::from("logfile")) {
+			Some(ware) => match ware.tab_txn(&tab_name, &self.id, self.writable).await {
+				Ok(txn) => txn,
+				Err(e) =>{
+					println!("fork_tab error {:?}", e);
+					return Err(e)
+				}
+			},
+			_ => return Err(String::from("WareNotFound"))
+		};
+
+		let _ = txn.force_fork().await;
+		self.modify(vec![tab], None, false).await
 	}
 
 	/**

@@ -670,7 +670,7 @@ impl AsyncLogFileStore {
 	/// 强制产生分裂
 	pub async fn force_fork(&self) -> DBResult {
 		let id = self.log_file.append(LogMethod::PlainAppend, &[], &[]);
-		if let Err(e) = self.log_file.commit(id, true, false).await {
+		if let Err(e) = self.log_file.commit(id, true, true).await {
 			Err(e.to_string())
 		} else {
 			Ok(())
