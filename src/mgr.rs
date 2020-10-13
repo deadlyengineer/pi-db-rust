@@ -2,7 +2,7 @@
  * 基于2pc的db管理器，每个db实现需要将自己注册到管理器上
  */
 
-use std::sync::Arc;
+use std::{sync::Arc, env};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::mem;
 use std::fmt;
@@ -18,8 +18,8 @@ use bon::{ReadBuffer, Decode, Encode, WriteBuffer, ReadBonErr};
 use crate::db::{SResult, IterResult, KeyIterResult, Filter, TabKV, TxCallback, TxState, Event, Bin, RwLog, TabMeta, CommitResult, DBResult};
 use crate::memery_db::{MemDBSnapshot, MemDB, RefMemeryTxn, MemeryMetaTxn};
 use crate::tabs::TxnType;
-use crate::log_file_db::{LogFileDBSnapshot, RefLogFileTxn, LogFileMetaTxn, LogFileDB, STORE_RUNTIME};
-use crate::fork::TableMetaInfo;
+use crate::log_file_db::{LogFileDBSnapshot, RefLogFileTxn, LogFileMetaTxn, LogFileDB, DB_META_TAB_NAME};
+use crate::fork::{ALL_TABLES, TableMetaInfo};
 
 /**
 * 表库及事务管理器
@@ -944,7 +944,6 @@ impl Tr {
 			Some(ware) => match ware.tab_txn(&tab_name, &self.id, self.writable).await {
 				Ok(txn) => txn,
 				Err(e) =>{
-					println!("fork_tab error {:?}", e);
 					return Err(e)
 				}
 			},
@@ -960,8 +959,6 @@ impl Tr {
 		let mut tmi = TableMetaInfo::new(fork_tab_name.clone(), new_meta);
 		tmi.parent = Some(tab_name.clone());
 
-		// TODO:
-		// tmi.root_parent = 
 		tmi.parent_log_id = Some(index);
 		tmi.parent = Some(tab_name);
 
@@ -970,16 +967,17 @@ impl Tr {
 		let mut wb1 = WriteBuffer::new();
 		fork_tab_name.encode(&mut wb1);
 
+		let db_path = env::var("DB_PATH").unwrap_or("./".to_string());
 		let tab = TabKV {
 			ware: Atom::from("logfile"),
-			tab: Atom::from("./testlogfile/tabs_meta"),
+			tab: Atom::from(format!("{}/{}", db_path, DB_META_TAB_NAME)),
 			key: Arc::new(wb1.bytes),
 			value: Some(Arc::new(wb.bytes)),
 			index: 0
 		};
 
-		// self.alter(ware_name, tab_name, meta)
-		
+		ALL_TABLES.lock().unwrap().insert(fork_tab_name, tmi);
+
 		self.modify(vec![tab], None, false).await
 	}
 
@@ -1369,9 +1367,10 @@ impl Tr {
 						let mut vt = WriteBuffer::new();
 						tmi.encode(&mut vt);
 		
+						let db_path = env::var("DB_PATH").unwrap_or("./".to_string());
 						let t = TabKV {
 							ware: ware_name.clone(),
-							tab: Atom::from("./testlogfile/tabs_meta"),
+							tab: Atom::from(format!("{}/{}", db_path, DB_META_TAB_NAME)),
 							key: Arc::new(kt.bytes),
 							value: Some(Arc::new(vt.bytes)),
 							index: 0,

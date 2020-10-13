@@ -135,7 +135,7 @@ fn test_fork() {
 
 	});
 
-	thread::sleep(Duration::from_secs(5));
+	thread::sleep(Duration::from_secs(3));
 }
 
 #[test]
@@ -151,7 +151,8 @@ fn test_load_data() {
 		let mut tr1 = mgr.transaction(true).await;
 		let meta1 = TabMeta::new(sinfo::EnumType::Str, sinfo::EnumType::Str);
 		tr1.alter(&Atom::from("logfile"), &Atom::from("./testlogfile/hello"), Some(Arc::new(meta1.clone()))).await;
-		tr1.alter(&Atom::from("logfile"), &Atom::from("./testlogfile/hello_fork"), Some(Arc::new(meta1))).await;
+		tr1.alter(&Atom::from("logfile"), &Atom::from("./testlogfile/hello_fork"), Some(Arc::new(meta1.clone()))).await;
+		tr1.alter(&Atom::from("logfile"), &Atom::from("./testlogfile/hello_fork2"), Some(Arc::new(meta1))).await;
 		tr1.prepare().await;
 		tr1.commit().await;
 
@@ -162,6 +163,64 @@ fn test_load_data() {
 		}
 		tr2.prepare().await;
 		tr2.commit().await;
+
+		let mut tr3 = mgr.transaction(true).await;
+	
+		let mut k = WriteBuffer::new();
+		k.write_bin(b"hello7", 0..6);
+		let mut v = WriteBuffer::new();
+		v.write_bin(b"world7", 0..6);
+
+		let item7 = TabKV {
+			ware: Atom::from("logfile"),
+			tab: Atom::from("./testlogfile/hello_fork"),
+			key: Arc::new(k.bytes.clone()),
+			value: Some(Arc::new(v.bytes)),
+			index: 0
+		};
+		tr3.modify(vec![item7], None, false).await;
+		tr3.prepare().await;
+		tr3.commit().await;
+
+		let mut tr4 = mgr.transaction(true).await;
+		let tm = TabMeta::new(sinfo::EnumType::Str, sinfo::EnumType::Str);
+		tr4.fork_tab(Atom::from("./testlogfile/hello_fork"), Atom::from("./testlogfile/hello_fork2"), tm).await;
+		tr4.prepare().await;
+		tr4.commit().await;
+
+		let mut tr5 = mgr.transaction(true).await;
+		let mut k = WriteBuffer::new();
+		k.write_bin(b"hello8", 0..6);
+		let mut v = WriteBuffer::new();
+		v.write_bin(b"world8", 0..6);
+
+		let item8 = TabKV {
+			ware: Atom::from("logfile"),
+			tab: Atom::from("./testlogfile/hello_fork2"),
+			key: Arc::new(k.bytes.clone()),
+			value: Some(Arc::new(v.bytes)),
+			index: 0
+		};
+		tr5.modify(vec![item8], None, false).await;
+		tr5.prepare().await;
+		tr5.commit().await;
+
+		let mut tr6 = mgr.transaction(false).await;
+		let mut iter = tr6.iter(&Atom::from("logfile"), &Atom::from("./testlogfile/hello_fork2"), None, false, None).await.unwrap();
+		while let Some(Ok(Some(elem))) = iter.next() {
+			println!("elem = {:?}", elem);
+		}
+		tr6.prepare().await;
+		tr6.commit().await;
+
+		let mut tr7 = mgr.transaction(false).await;
+		let mut iter = tr7.iter(&Atom::from("logfile"), &Atom::from("./testlogfile/hello"), None, false, None).await.unwrap();
+		while let Some(Ok(Some(elem))) = iter.next() {
+			println!("elem = {:?}", elem);
+		}
+		tr7.prepare().await;
+		tr7.commit().await;
+
 	});
 
 	thread::sleep(Duration::from_secs(3));

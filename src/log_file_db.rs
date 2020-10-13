@@ -34,6 +34,8 @@ lazy_static! {
     };
 }
 
+pub const DB_META_TAB_NAME: &'static str = "tabs_meta";
+
 /**
 * 基于file log的数据库
 */
@@ -53,12 +55,10 @@ impl LogFileDB {
 		}
 
 		// 从元信息表加载所有表元信息
-		// let db_path = env::var("DB_PATH").unwrap_or("./".to_string());
-		let db_path = "./testlogfile";
+		let db_path = env::var("DB_PATH").unwrap_or("./".to_string());
 		let mut path = PathBuf::new();
-		let tab_name = "tabs_meta";
 		path.push(db_path);
-		path.push(tab_name.clone().to_string());
+		path.push(DB_META_TAB_NAME);
 
 		println!("path === {:?}", path);
 
@@ -78,7 +78,6 @@ impl LogFileDB {
 		file.load(&mut store, None, false).await;
 
 		let map = store.map.lock();
-		println!("map len ==== {:?}", map.len());
 		for (k, v) in map.iter() {
 			let tab_name = Atom::decode(&mut ReadBuffer::new(k, 0)).unwrap();
 			let meta = TableMetaInfo::decode(&mut ReadBuffer::new(v.clone().to_vec().as_ref(), 0)).unwrap();
@@ -91,11 +90,11 @@ impl LogFileDB {
 
 	pub async fn open(tab: &Atom) -> SResult<LogFileTab> {
 		println!("open tab_name = {:?}", tab);
-		let chains = build_fork_chain(tab.clone());
-		println!("tab = {:?}, fork chains == {:?}", tab, chains);
 		for (k, v) in ALL_TABLES.lock().unwrap().iter() {
 			println!("open k = {:?}, v = {:?}", k, v);
 		}
+		let chains = build_fork_chain(tab.clone());
+		println!("tab = {:?}, fork chains == {:?}", tab, chains);
 		Ok(LogFileTab::new(tab, &chains).await)
 	}
 
@@ -710,16 +709,16 @@ impl LogFileTab {
 			tab: tab.clone(),
 		};
 
-		let db_path = env::var("DB_PATH").unwrap_or("./".to_string());
 		let mut path = PathBuf::new();
 		let tab_name = tab.clone();
 		let tab_name_clone = tab.clone();
-		path.push(db_path);
 		path.push(tab_name.clone().to_string());
 
 
+		let mut log_file_id = None;
 		// 首先加载叶子节点数据
 		let log_file_index = if chains.len() > 0 {
+			log_file_id = chains[0].parent_log_id;
 			chains[0].parent_log_id
 		} else {
 			None
@@ -745,7 +744,7 @@ impl LogFileTab {
 			load_size += k.len() + v.len();
 			root.upsert(Bon::new(Arc::new(k.clone())), Arc::new(v.to_vec()), false);
 		}
-		println!("====> load tab111: {:?} size: {:?}byte time elapsed: {:?} <====", tab_name_clone, load_size, start_time.elapsed());
+		debug!("====> load tab: {:?} size: {:?}byte time elapsed: {:?} <====", tab_name_clone, load_size, start_time.elapsed());
 
 		// 再加载分叉路径中的表的数据
 		for tm in chains.iter().skip(1) {
@@ -761,6 +760,7 @@ impl LogFileTab {
 	
 			let mut path = PathBuf::new();
 			path.push(tm.tab_name.clone().as_ref());
+			path.push(format!("{:0>width$}", log_file_id.unwrap()-1, width = 6));
 			file.load(&mut store, Some(path), false).await;
 	
 			let mut load_size = 0;
@@ -770,7 +770,8 @@ impl LogFileTab {
 				load_size += k.len() + v.len();
 				root.upsert(Bon::new(Arc::new(k.clone())), Arc::new(v.to_vec()), false);
 			}
-			println!("====> load tab222: {:?} size: {:?}byte time elapsed: {:?} <====", tm.tab_name, load_size, start_time.elapsed());
+			log_file_id = tm.parent_log_id;
+			debug!("====> load tab: {:?} size: {:?}byte time elapsed: {:?} <====", tm.tab_name, load_size, start_time.elapsed());
 		}
 
 		file_mem_tab.root = root;
