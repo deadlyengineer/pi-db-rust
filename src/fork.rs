@@ -141,7 +141,6 @@ pub fn build_fork_chain(tab_name: Atom) -> Vec<TableMetaInfo> {
 		}
 	}
 
-	chains.reverse();
 	chains
 }
 
@@ -238,7 +237,7 @@ mod tests {
 		for ch in &chains {
 			load_seq.push(ch.tab_name.as_ref());
 		}
-		assert_eq!(vec!["A", "B", "D", "F"], load_seq); // "F" 表的加载顺序是 A -> B -> D -> F
+		assert_eq!(vec!["F", "D", "B", "A"], load_seq); // "F" 表的加载顺序是 F -> D -> B -> A
 		println!("chains ==== {:?}", chains);
 	}
 

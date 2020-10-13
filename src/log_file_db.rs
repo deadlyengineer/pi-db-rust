@@ -24,7 +24,7 @@ use crate::db::{Bin, TabKV, SResult, IterResult, KeyIterResult, NextResult, Even
 use crate::tabs::{TabLog, Tabs, Prepare};
 use crate::db::BuildDbType;
 use crate::tabs::TxnType;
-use crate::fork::{ALL_TABLES, TableMetaInfo};
+use crate::fork::{ALL_TABLES, TableMetaInfo, build_fork_chain};
 use bon::{Decode, ReadBuffer};
 
 lazy_static! {
@@ -62,23 +62,23 @@ impl LogFileDB {
 
 		println!("path === {:?}", path);
 
-		let async_value = AsyncValue::new(AsyncRuntime::Multi(STORE_RUNTIME.clone()));
-		let async_value_clone = async_value.clone();
+		let file = match AsyncLogFileStore::open(path, 8000, 200 * 1024 * 1024, None).await {
+			Err(e) => {
+				panic!("!!!!!!open table = {:?} failed, e: {:?}", "tabs_meta", e);
+			},
+			Ok(store) => store
+		};
 
-		let _ = STORE_RUNTIME.spawn(STORE_RUNTIME.alloc(), async move {
-			match AsyncLogFileStore::open(path, 8000, 200 * 1024 * 1024, None).await {
-				Err(e) => {
-					error!("!!!!!!open table = {:?} failed, e: {:?}", "tabs_meta", e);
-				},
-				Ok(store) => {
-					println!("open ok");
-					async_value_clone.set(store);
-				}
-			}
-		});
+		let mut store = AsyncLogFileStore {
+			removed: Arc::new(SpinLock::new(XHashMap::default())),
+			map: Arc::new(SpinLock::new(BTreeMap::new())),
+			log_file: file.clone(),
+		};
 
-		let store = async_value.await;
+		file.load(&mut store, None, false).await;
+
 		let map = store.map.lock();
+		println!("map len ==== {:?}", map.len());
 		for (k, v) in map.iter() {
 			let tab_name = Atom::decode(&mut ReadBuffer::new(k, 0)).unwrap();
 			let meta = TableMetaInfo::decode(&mut ReadBuffer::new(v.clone().to_vec().as_ref(), 0)).unwrap();
@@ -90,13 +90,13 @@ impl LogFileDB {
 	}
 
 	pub async fn open(tab: &Atom) -> SResult<LogFileTab> {
-		// 确定这个表的分叉关系： 是否是从某个表分叉而来，如果是从其他表分叉而来，需要先加载其他表
-		// 如何处理分叉之后元信息的变动？ 现在的是js层处理序列化与反序列化的问题
-	
-		// 这里可能出现会重复加载某些表的问题，比如说B，C表是从A表分叉而来，那么这里就会加载A表两次。
-		// 所以是否还需要懒加载？ 懒加载的话就可能出现某个表加载多次的问题。
-		// 解决方法： 有分叉关系的表不进行懒加载，没有分叉过的表进行懒加载。创建数据库的时候就要先加载分叉的表。
-		Ok(LogFileTab::new(tab).await)
+		println!("open tab_name = {:?}", tab);
+		let chains = build_fork_chain(tab.clone());
+		println!("tab = {:?}, fork chains == {:?}", tab, chains);
+		for (k, v) in ALL_TABLES.lock().unwrap().iter() {
+			println!("open k = {:?}, v = {:?}", k, v);
+		}
+		Ok(LogFileTab::new(tab, &chains).await)
 	}
 
 	// 拷贝全部的表
@@ -641,25 +641,12 @@ impl PairLoader for AsyncLogFileStore {
 }
 
 impl AsyncLogFileStore {
-	async fn open<P: AsRef<Path> + std::fmt::Debug>(path: P, buf_len: usize, file_len: usize, log_file_index: Option<usize>) -> Result<Self> {
+	async fn open<P: AsRef<Path> + std::fmt::Debug>(path: P, buf_len: usize, file_len: usize, log_file_index: Option<usize>) -> Result<LogFile> {
+		println!("AsyncLogFileStore open ====== {:?}, log_index = {:?}", path, log_file_index);
 		match LogFile::open(STORE_RUNTIME.clone(), path, buf_len, file_len, log_file_index).await {
-            Err(e) => Err(e),
-            Ok(file) => {
-                //打开指定路径的日志存储成功
-                let mut store = AsyncLogFileStore {
-					removed: Arc::new(SpinLock::new(XHashMap::default())),
-					map: Arc::new(SpinLock::new(BTreeMap::new())),
-					log_file: file.clone()
-				};
-
-                if let Err(e) = file.load(&mut store, None, true).await {
-                    Err(e)
-                } else {
-                    //初始化内存数据成功
-                    Ok(store)
-                }
-            },
-        }
+            Err(e) =>panic!("LogFile::open error {:?}", e),
+            Ok(file) => Ok(file),
+		}
 	}
 
 	async fn write(&self, key: Vec<u8>, value: Vec<u8>) -> Result<Option<Vec<u8>>> {
@@ -716,7 +703,7 @@ unsafe impl Send for LogFileTab {}
 unsafe impl Sync for LogFileTab {}
 
 impl LogFileTab {
-	async fn new(tab: &Atom) -> Self {
+	async fn new(tab: &Atom, chains: &[TableMetaInfo]) -> Self {
 		let mut file_mem_tab = MemeryTab {
 			prepare: Prepare::new(XHashMap::with_capacity_and_hasher(0, Default::default())),
 			root: OrdMap::<Tree<Bon, Bin>>::new(None),
@@ -730,35 +717,65 @@ impl LogFileTab {
 		path.push(db_path);
 		path.push(tab_name.clone().to_string());
 
-		let async_value = AsyncValue::new(AsyncRuntime::Multi(STORE_RUNTIME.clone()));
-		let async_value_clone = async_value.clone();
 
-		let _ = STORE_RUNTIME.spawn(STORE_RUNTIME.alloc(), async move {
-			match AsyncLogFileStore::open(path, 8000, 200 * 1024 * 1024, None).await {
-				Err(e) => {
-					error!("!!!!!!open table = {:?} failed, e: {:?}", tab_name, e);
-				},
-				Ok(store) => {
-					async_value_clone.set(store);
-				}
-			}
-		});
+		// 首先加载叶子节点数据
+		let log_file_index = if chains.len() > 0 {
+			chains[0].parent_log_id
+		} else {
+			None
+		};
+		let file = match AsyncLogFileStore::open(path.clone(), 8000, 200 * 1024 * 1024, log_file_index).await {
+			Err(e) => panic!("!!!!!!open table = {:?} failed, e: {:?}", tab_name, e),
+			Ok(file) => file
+		};
 
-		let store = async_value.await;
+		let mut store = AsyncLogFileStore {
+			removed: Arc::new(SpinLock::new(XHashMap::default())),
+			map: Arc::new(SpinLock::new(BTreeMap::new())),
+			log_file: file.clone()
+		};
+
+		file.load(&mut store, Some(path), false).await;
 
 		let mut root= OrdMap::<Tree<Bon, Bin>>::new(None);
 		let mut load_size = 0;
 		let start_time = Instant::now();
 		let map = store.map.lock();
 		for (k, v) in map.iter() {
-			load_size += v.len();
+			load_size += k.len() + v.len();
 			root.upsert(Bon::new(Arc::new(k.clone())), Arc::new(v.to_vec()), false);
 		}
+		println!("====> load tab111: {:?} size: {:?}byte time elapsed: {:?} <====", tab_name_clone, load_size, start_time.elapsed());
+
+		// 再加载分叉路径中的表的数据
+		for tm in chains.iter().skip(1) {
+			let file = match AsyncLogFileStore::open(tm.tab_name.as_ref(), 8000, 200 * 1024 * 1024, tm.parent_log_id).await {
+				Err(e) => panic!("!!!!!!open table = {:?} failed, e: {:?}", tm.parent, e),
+				Ok(file) => file
+			};
+			let mut store = AsyncLogFileStore {
+				removed: Arc::new(SpinLock::new(XHashMap::default())),
+				map: Arc::new(SpinLock::new(BTreeMap::new())),
+				log_file: file.clone()
+			};
+	
+			let mut path = PathBuf::new();
+			path.push(tm.tab_name.clone().as_ref());
+			file.load(&mut store, Some(path), false).await;
+	
+			let mut load_size = 0;
+			let start_time = Instant::now();
+			let map = store.map.lock();
+			for (k, v) in map.iter() {
+				load_size += k.len() + v.len();
+				root.upsert(Bon::new(Arc::new(k.clone())), Arc::new(v.to_vec()), false);
+			}
+			println!("====> load tab222: {:?} size: {:?}byte time elapsed: {:?} <====", tm.tab_name, load_size, start_time.elapsed());
+		}
+
 		file_mem_tab.root = root;
-		debug!("====> load tab: {:?} size: {:?}byte time elapsed: {:?} <====", tab_name_clone, load_size, start_time.elapsed());
 
 		return LogFileTab(Arc::new(Mutex::new(file_mem_tab)), store);
-
 	}
 
 	pub async fn transaction(&self, id: &Guid, writable: bool) -> RefLogFileTxn {

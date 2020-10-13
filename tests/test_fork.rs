@@ -32,26 +32,62 @@ fn test_fork() {
 		let p = tr.prepare().await;
 		tr.commit().await;
 
-		let mut wb = WriteBuffer::new();
-		wb.write_bin(b"hello", 0..5);
+		let mut k = WriteBuffer::new();
+		k.write_bin(b"hello1", 0..6);
+		let mut v = WriteBuffer::new();
+		v.write_bin(b"world1", 0..6);
 
-		// let tm = TabMeta::new(sinfo::EnumType::Str, sinfo::EnumType::Str);
-		// let tmi = TableMetaInfo::new(Atom::from("hello"), tm);
-		// let mut wb1 = WriteBuffer::new();
-		// tmi.encode(&mut wb1);
+		let item1 = TabKV {
+			ware: Atom::from("logfile"),
+			tab: Atom::from("./testlogfile/hello"),
+			key: Arc::new(k.bytes.clone()),
+			value: Some(Arc::new(v.bytes)),
+			index: 0
+		};
 
-		// let item = TabKV {
-		// 	ware: Atom::from("logfile"),
-		// 	tab: Atom::from("./testlogfile/tabs_meta"),
-		// 	key: Arc::new(wb.bytes.clone()),
-		// 	value: Some(Arc::new(wb1.bytes)),
-		// 	index: 0
-		// };
+		let mut k = WriteBuffer::new();
+		k.write_bin(b"hello2", 0..6);
+		let mut v = WriteBuffer::new();
+		v.write_bin(b"world2", 0..6);
 
-		// let mut tr2 = mgr.transaction(true).await;
-		// tr2.modify(vec![item], None, false).await;
-		// tr2.prepare().await;
-		// tr2.commit().await;
+		let item2 = TabKV {
+			ware: Atom::from("logfile"),
+			tab: Atom::from("./testlogfile/hello"),
+			key: Arc::new(k.bytes.clone()),
+			value: Some(Arc::new(v.bytes)),
+			index: 0
+		};
+
+		let mut k = WriteBuffer::new();
+		k.write_bin(b"hello3", 0..6);
+		let mut v = WriteBuffer::new();
+		v.write_bin(b"world3", 0..6);
+
+		let item3 = TabKV {
+			ware: Atom::from("logfile"),
+			tab: Atom::from("./testlogfile/hello"),
+			key: Arc::new(k.bytes.clone()),
+			value: Some(Arc::new(v.bytes)),
+			index: 0
+		};
+
+		let mut k = WriteBuffer::new();
+		k.write_bin(b"hello4", 0..6);
+		let mut v = WriteBuffer::new();
+		v.write_bin(b"world4", 0..6);
+
+		let item4 = TabKV {
+			ware: Atom::from("logfile"),
+			tab: Atom::from("./testlogfile/hello"),
+			key: Arc::new(k.bytes.clone()),
+			value: Some(Arc::new(v.bytes)),
+			index: 0
+		};
+
+		let mut tr2 = mgr.transaction(true).await;
+		tr2.modify(vec![item1, item2, item3, item4], None, false).await;
+		tr2.prepare().await;
+		tr2.commit().await;
 
 
 		// 需要开一个新的事务来执行分叉操作？？
@@ -65,6 +101,67 @@ fn test_fork() {
 		let c = tr3.commit().await;
 		println!("commit=== {:?}", c);
 
+		let mut tr4 = mgr.transaction(true).await;
+
+		let mut k = WriteBuffer::new();
+		k.write_bin(b"hello5", 0..6);
+		let mut v = WriteBuffer::new();
+		v.write_bin(b"world5", 0..6);
+
+		let item5 = TabKV {
+			ware: Atom::from("logfile"),
+			tab: Atom::from("./testlogfile/hello"),
+			key: Arc::new(k.bytes.clone()),
+			value: Some(Arc::new(v.bytes)),
+			index: 0
+		};
+
+		let mut k = WriteBuffer::new();
+		k.write_bin(b"hello6", 0..6);
+		let mut v = WriteBuffer::new();
+		v.write_bin(b"world6", 0..6);
+
+		let item6 = TabKV {
+			ware: Atom::from("logfile"),
+			tab: Atom::from("./testlogfile/hello"),
+			key: Arc::new(k.bytes.clone()),
+			value: Some(Arc::new(v.bytes)),
+			index: 0
+		};
+
+		tr4.modify(vec![item5, item6], None, false).await;
+		tr4.prepare().await;
+		tr4.commit().await;
+
+	});
+
+	thread::sleep(Duration::from_secs(5));
+}
+
+#[test]
+fn test_load_data() {
+	let pool = MultiTaskPool::new("Store-Runtime".to_string(), 4, 1024 * 1024, 10, Some(10));
+	let rt: MultiTaskRuntime<()>  = pool.startup(true);
+
+	let _ = rt.spawn(rt.alloc(), async move {
+		let mgr = Mgr::new(GuidGen::new(0, 0));
+		let ware = DatabaseWare::new_log_file_ware(LogFileDB::new(Atom::from("./testlogfile"), 1024 * 1024 * 1024).await);
+		let _ = mgr.register(Atom::from("logfile"), Arc::new(ware)).await;
+
+		let mut tr1 = mgr.transaction(true).await;
+		let meta1 = TabMeta::new(sinfo::EnumType::Str, sinfo::EnumType::Str);
+		tr1.alter(&Atom::from("logfile"), &Atom::from("./testlogfile/hello"), Some(Arc::new(meta1.clone()))).await;
+		tr1.alter(&Atom::from("logfile"), &Atom::from("./testlogfile/hello_fork"), Some(Arc::new(meta1))).await;
+		tr1.prepare().await;
+		tr1.commit().await;
+
+		let mut tr2 = mgr.transaction(false).await;
+		let mut iter = tr2.iter(&Atom::from("logfile"), &Atom::from("./testlogfile/hello_fork"), None, false, None).await.unwrap();
+		while let Some(Ok(Some(elem))) = iter.next() {
+			println!("elem = {:?}", elem);
+		}
+		tr2.prepare().await;
+		tr2.commit().await;
 	});
 
 	thread::sleep(Duration::from_secs(3));

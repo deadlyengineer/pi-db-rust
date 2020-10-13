@@ -963,11 +963,12 @@ impl Tr {
 		// TODO:
 		// tmi.root_parent = 
 		tmi.parent_log_id = Some(index);
+		tmi.parent = Some(tab_name);
 
 		let mut wb = WriteBuffer::new();
 		tmi.encode(&mut wb);
 		let mut wb1 = WriteBuffer::new();
-		tab_name.encode(&mut wb1);
+		fork_tab_name.encode(&mut wb1);
 
 		let tab = TabKV {
 			ware: Atom::from("logfile"),
@@ -976,6 +977,8 @@ impl Tr {
 			value: Some(Arc::new(wb.bytes)),
 			index: 0
 		};
+
+		// self.alter(ware_name, tab_name, meta)
 		
 		self.modify(vec![tab], None, false).await
 	}
@@ -1353,9 +1356,33 @@ impl Tr {
 			ware.meta_txn(&id)
 		}).clone();
 
-		match txn.alter(tab_name, meta).await {
+		match txn.alter(tab_name, meta.clone()).await {
 			Ok(r) => {
 				self.state = TxState::Ok;
+				// 创建表成功，写入到元信息记录表
+				let mut kt = WriteBuffer::new();
+				tab_name.clone().encode(&mut kt);
+				match meta {
+					Some(m) => {
+						let mt = TabMeta::new(m.k.clone(), m.v.clone());
+						let tmi = TableMetaInfo::new(tab_name.clone(), mt);
+						let mut vt = WriteBuffer::new();
+						tmi.encode(&mut vt);
+		
+						let t = TabKV {
+							ware: ware_name.clone(),
+							tab: Atom::from("./testlogfile/tabs_meta"),
+							key: Arc::new(kt.bytes),
+							value: Some(Arc::new(vt.bytes)),
+							index: 0,
+						};
+						self.modify(vec![t], None, false).await;
+					}
+					None => {
+
+					}
+				}
+				
 				Ok(r)
 			}
 			Err(e) => {
