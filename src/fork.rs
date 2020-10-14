@@ -22,17 +22,15 @@ lazy_static! {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TableMetaInfo {
 	/// 表名
-	pub(crate) tab_name: Atom,
+	pub tab_name: Atom,
 	/// key, value 类型
-	pub(crate) meta: TabMeta,
+	pub meta: TabMeta,
 	/// 父表, 一个表最多只有一个父表， 父表上可以分叉产生多个子表
-	pub(crate) parent: Option<Atom>,
-	/// 根表, 是否需要这个字段？
-	pub(crate) root_parent: Option<Atom>,
+	pub parent: Option<Atom>,
 	/// 该表是从父表的哪个log file id分叉而来
-	pub(crate) parent_log_id: Option<usize>,
-	/// 表的引用计数， 表示在log_id的地方产生了多少个分叉， 引用计数为0才可以安全删除这个表
-	pub(crate) ref_count_at: HashMap<usize, usize>
+	pub parent_log_id: Option<usize>,
+	/// 表的引用计数， 产生一个分叉则引用计数加1， 删除一个叶节点表，父表引用计数减1， 引用计数为0才可以安全删除这个表
+	pub ref_count: usize,
 }
 
 impl TableMetaInfo {
@@ -46,24 +44,14 @@ impl TableMetaInfo {
 
 
 	/// 增加表的引用计数
-	pub fn inc_refcount(&mut self, log_id: usize) {
-		self.ref_count_at.entry(log_id).and_modify(|e| {
-			*e += 1;
-		});
+	pub fn inc_refcount(&mut self) {
+		self.ref_count += 1;
 	}
 
 	/// 减少表的引用计数
-	pub fn dec_refcount(&mut self, log_id: usize) -> Result<(), &'static str> {
-		match self.ref_count_at.get_mut(&log_id) {
-			Some(n) => {
-				if *n <= 1 {
-					Err("ref count <= 1")
-				} else {
-					Ok(())
-				}
-			}
-			None => Err("log_id not exist")
-		}
+	pub fn dec_refcount(&mut self) {
+		self.ref_count -= 1;
+
 	}
 }
 
@@ -89,14 +77,11 @@ impl Encode for TableMetaInfo {
 		let mut bin2 = WriteBuffer::new();
 		self.parent.encode(&mut bin2);
 		bb.write_bin(bin2.bytes.as_ref(), 0..bin2.len());
-		let mut bin3 = WriteBuffer::new();
-		self.root_parent.encode(&mut bin3);
-		bb.write_bin(bin3.bytes.as_ref(), 0..bin3.bytes.len());
 		let mut bin4 = WriteBuffer::new();
 		self.parent_log_id.encode(&mut bin4);
 		bb.write_bin(bin4.bytes.as_ref(), 0..bin4.bytes.len());
 		let mut bin5 = WriteBuffer::new();
-		self.ref_count_at.encode(&mut bin5);
+		self.ref_count.encode(&mut bin5);
 		bb.write_bin(bin5.bytes.as_ref(), 0..bin5.bytes.len());
 	}
 }
@@ -110,20 +95,17 @@ impl Decode for TableMetaInfo {
 		let meta = TabMeta::decode(&mut ReadBuffer::new(&bin1, 0))?;
 		let bin2 = bb.read_bin()?;
 		let parent = Option::decode(&mut ReadBuffer::new(&bin2, 0))?;
-		let bin3 = bb.read_bin()?;
-		let root_parent = Option::decode(&mut ReadBuffer::new(&bin3, 0))?;
 		let bin4 = bb.read_bin()?;
 		let parent_log_id = Option::decode(&mut ReadBuffer::new(&bin4, 0))?;
 		let bin5 = bb.read_bin()?;
-		let ref_count_at = HashMap::decode(&mut ReadBuffer::new(&bin5, 0))?;
+		let ref_count = usize::decode(&mut ReadBuffer::new(&bin5, 0))?;
 
 		Ok(Self {
 			tab_name,
 			meta,
 			parent,
-			root_parent,
 			parent_log_id,
-			ref_count_at
+			ref_count
 		})
 	}
 }
@@ -158,9 +140,8 @@ mod tests {
 			tab_name: Atom::from("hello"),
 			meta: TabMeta::new(EnumType::Str, EnumType::Str),
 			parent: Some(Atom::from("world")),
-			root_parent: Some(Atom::from("alice")),
 			parent_log_id: Some(1),
-			ref_count_at: HashMap::new()
+			ref_count: 0,
 		};
 
 		let mut bin = WriteBuffer::new();
@@ -180,49 +161,43 @@ mod tests {
 			tab_name: Atom::from("A"),
 			meta: TabMeta::new(EnumType::Str, EnumType::Str),
 			parent: None,
-			root_parent: None,
 			parent_log_id: None,
-			ref_count_at: HashMap::new()
+			ref_count: 3,
 		};
 		let t2 = TableMetaInfo {
 			tab_name: Atom::from("B"),
 			meta: TabMeta::new(EnumType::Str, EnumType::Str),
 			parent: Some(Atom::from("A")),
-			root_parent: Some(Atom::from("A")),
 			parent_log_id: Some(2),
-			ref_count_at: HashMap::new()
+			ref_count: 1
 		};
 		let t3 = TableMetaInfo {
 			tab_name: Atom::from("C"),
 			meta: TabMeta::new(EnumType::Str, EnumType::Str),
 			parent: Some(Atom::from("A")),
-			root_parent: Some(Atom::from("A")),
 			parent_log_id: Some(4),
-			ref_count_at: HashMap::new()
+			ref_count: 0
 		};
 		let t4 = TableMetaInfo {
 			tab_name: Atom::from("D"),
 			meta: TabMeta::new(EnumType::Str, EnumType::Str),
 			parent: Some(Atom::from("B")),
-			root_parent: Some(Atom::from("A")),
 			parent_log_id: Some(3),
-			ref_count_at: HashMap::new()
+			ref_count: 1
 		};
 		let t5 = TableMetaInfo {
 			tab_name: Atom::from("E"),
 			meta: TabMeta::new(EnumType::Str, EnumType::Str),
 			parent: Some(Atom::from("A")),
-			root_parent: Some(Atom::from("A")),
 			parent_log_id: Some(7),
-			ref_count_at: HashMap::new()
+			ref_count: 0
 		};
 		let t6 = TableMetaInfo {
 			tab_name: Atom::from("F"),
 			meta: TabMeta::new(EnumType::Str, EnumType::Str),
 			parent: Some(Atom::from("D")),
-			root_parent: Some(Atom::from("A")),
 			parent_log_id: Some(2),
-			ref_count_at: HashMap::new()
+			ref_count: 0
 		};
 
 		ALL_TABLES.lock().unwrap().insert(t1.tab_name.clone(), t1);

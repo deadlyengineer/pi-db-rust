@@ -931,15 +931,6 @@ impl Tr {
 	/// 原表的log产生分裂，生成一个新的log文件id，之前的数据就是两个表的公共数据
 	pub async fn fork_tab(&mut self, tab_name: Atom, fork_tab_name: Atom, new_meta: TabMeta) -> DBResult {
 		// TODO: 判断表名是否有重复
-
-		// 创建新的表数据存储目录, 新表的写入在这个目录下创建新文件
-		// 这里要保存表的分叉关系
-		// 原来表的写入应该在新的log文件中写入，分叉之前的log文件已经变为只读
-
-		// tab_name 是已经存在的表， fork_tab_name 是分叉后的表
-		// 这里需要知道tab_name分叉之后的 log_id
-		
-
 		let txn = match self.ware_log_map.get(&Atom::from("logfile")) {
 			Some(ware) => match ware.tab_txn(&tab_name, &self.id, self.writable).await {
 				Ok(txn) => txn,
@@ -961,6 +952,8 @@ impl Tr {
 
 		tmi.parent_log_id = Some(index);
 		tmi.parent = Some(tab_name);
+
+		// TODO: 找到父表的元信息，将它的引用计数减一
 
 		let mut wb = WriteBuffer::new();
 		tmi.encode(&mut wb);
