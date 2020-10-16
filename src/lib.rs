@@ -1,8 +1,4 @@
-#![crate_type = "rlib"]
-#![feature(asm,box_syntax,box_patterns)]
-#![feature(core_intrinsics)]
-#![feature(type_ascription)]
-#![feature(nll)]
+#![allow(warnings)]
 #[allow(dead_code,unused_variables,non_snake_case,unused_parens,unused_assignments,unused_unsafe,unused_imports)]
 
 #[macro_use]
