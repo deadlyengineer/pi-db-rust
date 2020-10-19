@@ -140,8 +140,7 @@ impl Mgr {
 			id: id.clone(),
 			ware_log_map: map,
 			state: TxState::Ok,
-			tab_txns: XHashMap::with_capacity_and_hasher(0, Default::default()),
-			meta_txns: XHashMap::with_capacity_and_hasher(0, Default::default()),
+			..Default::default()
 		}
 	}
 
@@ -713,6 +712,33 @@ impl DatabaseTabTxn {
 		}
 	}
 
+	pub async fn fork_prepare(&self) -> DBResult {
+		match self {
+			DatabaseTabTxn::MemTabTxn(_) => unimplemented!(),
+			DatabaseTabTxn::LogFileTabTxn(txn) => {
+				txn.fork_prepare().await
+			}
+		}
+	}
+
+	pub async fn fork_commit(&self) -> DBResult {
+		match self {
+			DatabaseTabTxn::MemTabTxn(_) => unimplemented!(),
+			DatabaseTabTxn::LogFileTabTxn(txn) => {
+				txn.fork_commit().await
+			}
+		}
+	}
+
+	pub async fn fork_rollback(&self) -> DBResult {
+		match self {
+			DatabaseTabTxn::MemTabTxn(_) => unimplemented!(),
+			DatabaseTabTxn::LogFileTabTxn(txn) => {
+				txn.fork_rollback().await
+			}
+		}
+	}
+
 	pub async fn force_fork(&self) -> std::io::Result<usize> {
 		match self {
 			DatabaseTabTxn::MemTabTxn(_) => unimplemented!(),
@@ -896,6 +922,7 @@ impl WareMap {
 }
 
 // 子事务
+#[derive(Default)]
 pub struct Tr {
 	writable: bool,
 	timeout: usize, // 子事务的预提交的超时时间, TODO 取提交的库的最大超时时间
@@ -904,6 +931,7 @@ pub struct Tr {
 	state: TxState,
 	tab_txns: XHashMap<(Atom, Atom), Arc<DatabaseTabTxn>>, //表事务表
 	meta_txns: XHashMap<Atom, Arc<DatabaseMetaTxn>>, //元信息事务表
+	fork_txns: XHashMap<(Atom, Atom, Atom, TabMeta), Arc<DatabaseTabTxn>> // 表分叉事务
 }
 
 impl Tr {
@@ -986,11 +1014,11 @@ impl Tr {
 				}
 			}
 		}
-		let len = self.tab_txns.len() + alter_len;
+		let len = self.tab_txns.len() + alter_len + self.fork_txns.len() ;
 		let count = Arc::new(AtomicUsize::new(len));
 
 		//处理每个表的预提交
-		for val in self.tab_txns.values_mut() {
+		for val in self.tab_txns.values() {
 			match val.prepare(self.timeout).await {
 				Ok(_) => {
 					if count.fetch_sub(1, Ordering::SeqCst) == 1 {
@@ -1005,8 +1033,24 @@ impl Tr {
 			}
 		}
 		//处理tab alter的预提交
-		for val in self.meta_txns.values_mut() {
+		for val in self.meta_txns.values() {
 			match val.prepare(self.timeout).await {
+				Ok(_) => {
+					if count.fetch_sub(1, Ordering::SeqCst) == 1 {
+						self.state = TxState::PreparOk;
+						return Ok(())
+					}
+				}
+				Err(e) => {
+					self.state = TxState::PreparFail;
+					return Err(e)
+				}
+			}
+		}
+
+		// 处理表分叉预提交
+		for val in self.fork_txns.values() {
+			match val.fork_prepare().await {
 				Ok(_) => {
 					if count.fetch_sub(1, Ordering::SeqCst) == 1 {
 						self.state = TxState::PreparOk;
@@ -1036,7 +1080,7 @@ impl Tr {
 				self.ware_log_map.get(ware).unwrap().commit(&self.id).await;
 			}
 		}
-		let len = self.tab_txns.len() + alter_len;
+		let len = self.tab_txns.len() + alter_len + self.fork_txns.len();
 		if len == 0 {
 			return Ok(())
 		}
@@ -1065,8 +1109,24 @@ impl Tr {
 			}
 		}
 		//处理tab alter的提交
-		for val in self.meta_txns.values_mut() {
+		for val in self.meta_txns.values() {
 			match val.commit().await {
+				Ok(_) => {
+					if count.fetch_sub(1, Ordering::SeqCst) == 1 {
+						self.state = TxState::Commited;
+						return Ok(())
+					}
+				}
+				Err(e) => {
+					self.state = TxState::CommitFail;
+					return Err(e)
+				}
+			}
+		}
+
+		// 处理表分叉的提交
+		for val in self.fork_txns.values() {
+			match val.fork_commit().await {
 				Ok(_) => {
 					if count.fetch_sub(1, Ordering::SeqCst) == 1 {
 						self.state = TxState::Commited;
@@ -1096,11 +1156,11 @@ impl Tr {
 				self.ware_log_map.get(ware).unwrap().rollback(&self.id).await;
 			}
 		}
-		let len = self.tab_txns.len() + alter_len;
+		let len = self.tab_txns.len() + alter_len + self.fork_txns.len();
 		let count = Arc::new(AtomicUsize::new(len));
 		
 		//处理每个表的预提交
-		for val in self.tab_txns.values_mut() {
+		for val in self.tab_txns.values() {
 			match val.rollback().await {
 				Ok(()) => {
 					if count.fetch_sub(1, Ordering::SeqCst) == 1 {
@@ -1115,8 +1175,24 @@ impl Tr {
 			}
 		}
 		//处理tab alter的预提交
-		for val in self.meta_txns.values_mut() {
+		for val in self.meta_txns.values() {
 			match val.rollback().await {
+				Ok(()) => {
+					if count.fetch_sub(1, Ordering::SeqCst) == 1 {
+						self.state = TxState::Rollbacked;
+						return Ok(())
+					}
+				}
+				Err(e) => {
+					self.state = TxState::RollbackFail;
+					return Err(e)
+				}
+			}
+		}
+
+		// 处理表分叉的回滚
+		for val in self.fork_txns.values() {
+			match val.fork_rollback().await {
 				Ok(()) => {
 					if count.fetch_sub(1, Ordering::SeqCst) == 1 {
 						self.state = TxState::Rollbacked;

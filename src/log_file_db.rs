@@ -11,7 +11,7 @@ use ordmap::ordmap::{OrdMap, Entry, Iter as OIter, Keys};
 use ordmap::asbtree::Tree;
 use atom::Atom;
 use guid::Guid;
-use hash::XHashMap;
+use hash::{XHashMap, XHashSet};
 use r#async::lock::mutex_lock::Mutex;
 use r#async::lock::rw_lock::RwLock;
 use pi_store::log_store::log_file::{PairLoader, LogMethod, LogFile};
@@ -172,6 +172,7 @@ pub struct FileMemTxn {
 	root: BinMap,
 	old: BinMap,
 	rwlog: XHashMap<Bin, RwLog>,
+	fork_names: Vec<Atom>, // 分叉名字是否有冲突
 	state: TxState,
 }
 
@@ -189,7 +190,8 @@ impl FileMemTxn {
 			root: root.clone(),
 			tab,
 			old: root,
-			rwlog: XHashMap::with_capacity_and_hasher(0, Default::default()),
+			rwlog: XHashMap::default(),
+			fork_names: vec![],
 			state: TxState::Ok,
 		};
 		return RefLogFileTxn(Mutex::new(txn))
@@ -330,6 +332,31 @@ impl FileMemTxn {
 	pub async fn force_fork_inner(&self) -> Result<usize> {
 		self.tab.1.clone().force_fork().await
 	}
+
+	pub async fn fork_prepare_inner(&self) -> DBResult {
+		// 检查是否有冲突的表名
+		let len = self.fork_names.len();
+		let mut set = XHashSet::default();
+		for v in self.fork_names.iter() {
+			set.insert(v);
+		}
+
+		if len == set.len() {
+			Ok(())
+		} else {
+			Err("duplicate fork tab name".to_string())
+		}
+	}
+
+	pub async fn fork_commit_inner(&self) -> DBResult {
+		self.tab.1.clone().force_fork().await;
+		Ok(())
+	}
+
+	pub async fn fork_rollback_inner(&self) -> DBResult {
+		// 已经分裂则无法实现回滚
+		Ok(())
+	}
 }
 
 impl RefLogFileTxn {
@@ -381,6 +408,24 @@ impl RefLogFileTxn {
 				return Err(e.to_string())
 			}
 		}
+	}
+
+	/// fork 预提交
+	pub async fn fork_prepare(&self) -> DBResult {
+		let mut txn = self.0.lock().await;
+		txn.fork_prepare_inner().await
+	}
+
+	/// fork 提交
+	pub async fn fork_commit(&self) -> DBResult {
+		let mut txn = self.0.lock().await;
+		txn.fork_commit_inner().await
+	}
+
+	/// fork 回滚
+	pub async fn fork_rollback(&self) -> DBResult {
+		let mut txn = self.0.lock().await;
+		txn.fork_rollback_inner().await
 	}
 
 	/// 强制产生分裂
