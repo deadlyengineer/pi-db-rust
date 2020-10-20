@@ -60,8 +60,6 @@ impl LogFileDB {
 		path.push(db_path);
 		path.push(DB_META_TAB_NAME);
 
-		println!("path === {:?}", path);
-
 		let file = match AsyncLogFileStore::open(path, 8000, 200 * 1024 * 1024, None).await {
 			Err(e) => {
 				panic!("!!!!!!open table = {:?} failed, e: {:?}", "tabs_meta", e);
@@ -81,7 +79,6 @@ impl LogFileDB {
 		for (k, v) in map.iter() {
 			let tab_name = Atom::decode(&mut ReadBuffer::new(k, 0)).unwrap();
 			let meta = TableMetaInfo::decode(&mut ReadBuffer::new(v.clone().to_vec().as_ref(), 0)).unwrap();
-			println!("tab_name = {:?}, meta = {:?}", tab_name, meta);
 			ALL_TABLES.lock().await.insert(tab_name, meta);
 		}
 
@@ -89,12 +86,8 @@ impl LogFileDB {
 	}
 
 	pub async fn open(tab: &Atom) -> SResult<LogFileTab> {
-		println!("open tab_name = {:?}", tab);
-		for (k, v) in ALL_TABLES.lock().await.iter() {
-			println!("open k = {:?}, v = {:?}", k, v);
-		}
 		let chains = build_fork_chain(tab.clone()).await;
-		println!("tab = {:?}, fork chains == {:?}", tab, chains);
+		// println!("tab = {:?}, fork chains == {:?}", tab, chains);
 		Ok(LogFileTab::new(tab, &chains).await)
 	}
 
@@ -351,9 +344,7 @@ impl FileMemTxn {
 		tmi.parent = Some(tab_name.clone());
 
 		tmi.parent_log_id = Some(index);
-		tmi.parent = Some(tab_name);
-
-		// TODO: 找到父表的元信息，将它的引用计数减一
+		tmi.parent = Some(tab_name.clone());
 
 		let mut wb = WriteBuffer::new();
 		tmi.encode(&mut wb);
@@ -381,7 +372,20 @@ impl FileMemTxn {
 			log_file: file.clone(),
 		};
 
+		// 找到父表的元信息，将它的引用计数加一
+		ALL_TABLES.lock().await.entry(tab_name.clone()).and_modify(|tab| {
+			println!("add ref_count tab_name = {:?}", tab_name);
+			tab.ref_count += 1;
+			let mut b = WriteBuffer::new();
+			tab_name.encode(&mut b);
+
+			let mut b2 = WriteBuffer::new();
+			tab.encode(&mut b2);
+			store.write(b.bytes, b2.bytes);
+		});
+
 		// 新创建的分叉表信息写入元信息表中
+		// TODO: 错误处理
 		store.write(wb1.bytes, wb.bytes).await;
 
 		Ok(())
@@ -665,6 +669,9 @@ pub struct LogFileMetaTxn;
 impl LogFileMetaTxn {
 	// 创建表、修改指定表的元数据
 	pub async fn alter(&self, tab_name: &Atom, meta: Option<Arc<TabMeta>>) -> DBResult {
+		if let Some(_) = ALL_TABLES.lock().await.get(tab_name) {
+			return Err(format!("tab_name: {:?} exist", tab_name))
+		}
 		let mut kt = WriteBuffer::new();
 		tab_name.clone().encode(&mut kt);
 		let db_path = env::var("DB_PATH").unwrap_or("./".to_string());
@@ -781,7 +788,7 @@ impl PairLoader for AsyncLogFileStore {
 
 impl AsyncLogFileStore {
 	async fn open<P: AsRef<Path> + std::fmt::Debug>(path: P, buf_len: usize, file_len: usize, log_file_index: Option<usize>) -> Result<LogFile> {
-		println!("AsyncLogFileStore open ====== {:?}, log_index = {:?}", path, log_file_index);
+		// println!("AsyncLogFileStore open ====== {:?}, log_index = {:?}", path, log_file_index);
 		match LogFile::open(STORE_RUNTIME.clone(), path, buf_len, file_len, log_file_index).await {
             Err(e) =>panic!("LogFile::open error {:?}", e),
             Ok(file) => Ok(file),
@@ -863,6 +870,7 @@ impl LogFileTab {
 		} else {
 			None
 		};
+		println!("LogFileTab::new  log_file_index = {:?}, tab = {:?}, chains = {:?}", log_file_index, tab, chains);
 		let file = match AsyncLogFileStore::open(path.clone(), 8000, 200 * 1024 * 1024, log_file_index).await {
 			Err(e) => panic!("!!!!!!open table = {:?} failed, e: {:?}", tab_name, e),
 			Ok(file) => file
@@ -873,6 +881,8 @@ impl LogFileTab {
 			map: Arc::new(SpinLock::new(BTreeMap::new())),
 			log_file: file.clone()
 		};
+
+		println!("LogFileTab new path = {:?}", path);
 
 		file.load(&mut store, Some(path), false).await;
 

@@ -158,6 +158,7 @@ fn test_load_data() {
 
 		let mut tr2 = mgr.transaction(false).await;
 		let mut iter = tr2.iter(&Atom::from("logfile"), &Atom::from("./testlogfile/hello_fork"), None, false, None).await.unwrap();
+		println!("hello_fork");
 		while let Some(Ok(Some(elem))) = iter.next() {
 			println!("elem = {:?}", elem);
 		}
@@ -207,6 +208,7 @@ fn test_load_data() {
 
 		let mut tr6 = mgr.transaction(false).await;
 		let mut iter = tr6.iter(&Atom::from("logfile"), &Atom::from("./testlogfile/hello_fork2"), None, false, None).await.unwrap();
+		println!("hello_fork2");
 		while let Some(Ok(Some(elem))) = iter.next() {
 			println!("elem = {:?}", elem);
 		}
@@ -215,6 +217,8 @@ fn test_load_data() {
 
 		let mut tr7 = mgr.transaction(false).await;
 		let mut iter = tr7.iter(&Atom::from("logfile"), &Atom::from("./testlogfile/hello"), None, false, None).await.unwrap();
+		println!("hello");
+
 		while let Some(Ok(Some(elem))) = iter.next() {
 			println!("elem = {:?}", elem);
 		}
