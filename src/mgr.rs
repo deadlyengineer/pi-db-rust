@@ -784,13 +784,13 @@ impl DatabaseMetaTxn {
 	* @param _meta 元信息
 	* @returns 修改结果
 	*/
-	async fn alter(&self, _tab: &Atom, _meta: Option<Arc<TabMeta>>) -> DBResult {
+	async fn alter(&self, tab_name: &Atom, meta: Option<Arc<TabMeta>>) -> DBResult {
 		match self {
 			DatabaseMetaTxn::MemMetaTxn(txn) => {
-				txn.alter(_tab, _meta).await
+				txn.alter(tab_name, meta).await
 			}
 			DatabaseMetaTxn::LogFileMetaTxn(txn) => {
-				txn.alter(_tab, _meta).await
+				txn.alter(tab_name, meta).await
 			}
 		}
 	}
@@ -1388,31 +1388,6 @@ impl Tr {
 		match txn.alter(tab_name, meta.clone()).await {
 			Ok(r) => {
 				self.state = TxState::Ok;
-				// 创建表成功，写入到元信息记录表
-				let mut kt = WriteBuffer::new();
-				tab_name.clone().encode(&mut kt);
-				match meta {
-					Some(m) => {
-						let mt = TabMeta::new(m.k.clone(), m.v.clone());
-						let tmi = TableMetaInfo::new(tab_name.clone(), mt);
-						let mut vt = WriteBuffer::new();
-						tmi.encode(&mut vt);
-		
-						let db_path = env::var("DB_PATH").unwrap_or("./".to_string());
-						let t = TabKV {
-							ware: ware_name.clone(),
-							tab: Atom::from(format!("{}/{}", db_path, DB_META_TAB_NAME)),
-							key: Arc::new(kt.bytes),
-							value: Some(Arc::new(vt.bytes)),
-							index: 0,
-						};
-						self.modify(vec![t], None, false).await;
-					}
-					None => {
-
-					}
-				}
-				
 				Ok(r)
 			}
 			Err(e) => {
