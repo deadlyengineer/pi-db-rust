@@ -712,20 +712,20 @@ impl DatabaseTabTxn {
 		}
 	}
 
-	pub async fn fork_prepare(&self) -> DBResult {
+	pub async fn fork_prepare(&self, ware: Atom, tab_name: Atom, fork_tab_name: Atom, meta: TabMeta) -> DBResult {
 		match self {
 			DatabaseTabTxn::MemTabTxn(_) => unimplemented!(),
 			DatabaseTabTxn::LogFileTabTxn(txn) => {
-				txn.fork_prepare().await
+				txn.fork_prepare(ware, tab_name, fork_tab_name, meta).await
 			}
 		}
 	}
 
-	pub async fn fork_commit(&self) -> DBResult {
+	pub async fn fork_commit(&self, ware: Atom, tab_name: Atom, fork_tab_name: Atom, meta: TabMeta) -> DBResult {
 		match self {
 			DatabaseTabTxn::MemTabTxn(_) => unimplemented!(),
 			DatabaseTabTxn::LogFileTabTxn(txn) => {
-				txn.fork_commit().await
+				txn.fork_commit(ware, tab_name, fork_tab_name, meta).await
 			}
 		}
 	}
@@ -931,7 +931,7 @@ pub struct Tr {
 	state: TxState,
 	tab_txns: XHashMap<(Atom, Atom), Arc<DatabaseTabTxn>>, //表事务表
 	meta_txns: XHashMap<Atom, Arc<DatabaseMetaTxn>>, //元信息事务表
-	fork_txns: XHashMap<(Atom, Atom, Atom, TabMeta), Arc<DatabaseTabTxn>> // 表分叉事务
+	fork_txns: XHashMap<(Atom, Atom, Atom), (TabMeta, Arc<DatabaseTabTxn>)> // 这个事务中产生的所有分叉操作
 }
 
 impl Tr {
@@ -945,9 +945,12 @@ impl Tr {
 
 	/// 创建 tab_name 的一个分叉表
 	/// 原表的log产生分裂，生成一个新的log文件id，之前的数据就是两个表的公共数据
-	pub async fn fork_tab(&mut self, tab_name: Atom, fork_tab_name: Atom, new_meta: TabMeta) -> DBResult {
-		// TODO: 判断表名是否有重复
-		let txn = match self.ware_log_map.get(&Atom::from("logfile")) {
+	pub async fn fork_tab(&mut self, ware: Atom, tab_name: Atom, fork_tab_name: Atom, new_meta: TabMeta) -> DBResult {
+		// 判断本事务中是否有冲突的分叉表名
+		if let Some(_) = self.fork_txns.get(&(ware.clone(), tab_name.clone(), fork_tab_name.clone()))  {
+			return Err("duplicate fork tab name".to_string())
+		}
+		let txn = match self.ware_log_map.get(&ware) {
 			Some(ware) => match ware.tab_txn(&tab_name, &self.id, self.writable).await {
 				Ok(txn) => txn,
 				Err(e) =>{
@@ -956,38 +959,9 @@ impl Tr {
 			},
 			_ => return Err(String::from("WareNotFound"))
 		};
+		self.fork_txns.insert((ware, tab_name, fork_tab_name), (new_meta, txn));
 
-		let index = match txn.force_fork().await {
-			Ok(idx) => idx,
-			Err(e) => return Err(e.to_string())
-		};
-		println!("fork_index = {:?}", index);
-
-		let mut tmi = TableMetaInfo::new(fork_tab_name.clone(), new_meta);
-		tmi.parent = Some(tab_name.clone());
-
-		tmi.parent_log_id = Some(index);
-		tmi.parent = Some(tab_name);
-
-		// TODO: 找到父表的元信息，将它的引用计数减一
-
-		let mut wb = WriteBuffer::new();
-		tmi.encode(&mut wb);
-		let mut wb1 = WriteBuffer::new();
-		fork_tab_name.encode(&mut wb1);
-
-		let db_path = env::var("DB_PATH").unwrap_or("./".to_string());
-		let tab = TabKV {
-			ware: Atom::from("logfile"),
-			tab: Atom::from(format!("{}/{}", db_path, DB_META_TAB_NAME)),
-			key: Arc::new(wb1.bytes),
-			value: Some(Arc::new(wb.bytes)),
-			index: 0
-		};
-
-		ALL_TABLES.lock().unwrap().insert(fork_tab_name, tmi);
-
-		self.modify(vec![tab], None, false).await
+		Ok(())
 	}
 
 	/**
@@ -1048,9 +1022,9 @@ impl Tr {
 			}
 		}
 
-		// 处理表分叉预提交
-		for val in self.fork_txns.values() {
-			match val.fork_prepare().await {
+		// 处理每个表事务的分叉预提交
+		for (k, v) in self.fork_txns.iter() {
+			match v.1.fork_prepare(k.0.clone(), k.1.clone(), k.2.clone(), v.0.clone()).await {
 				Ok(_) => {
 					if count.fetch_sub(1, Ordering::SeqCst) == 1 {
 						self.state = TxState::PreparOk;
@@ -1125,8 +1099,8 @@ impl Tr {
 		}
 
 		// 处理表分叉的提交
-		for val in self.fork_txns.values() {
-			match val.fork_commit().await {
+		for (k, v) in self.fork_txns.iter() {
+			match v.1.fork_commit(k.0.clone(), k.1.clone(), k.2.clone(), v.0.clone()).await {
 				Ok(_) => {
 					if count.fetch_sub(1, Ordering::SeqCst) == 1 {
 						self.state = TxState::Commited;
@@ -1191,8 +1165,8 @@ impl Tr {
 		}
 
 		// 处理表分叉的回滚
-		for val in self.fork_txns.values() {
-			match val.fork_rollback().await {
+		for (k, v) in self.fork_txns.iter() {
+			match v.1.fork_rollback().await {
 				Ok(()) => {
 					if count.fetch_sub(1, Ordering::SeqCst) == 1 {
 						self.state = TxState::Rollbacked;
@@ -1487,7 +1461,7 @@ impl Tr {
 			_ => None
 		}
 	}
-	
+
 	/**
 	* 构建表事务
 	* @param ware_name 库名

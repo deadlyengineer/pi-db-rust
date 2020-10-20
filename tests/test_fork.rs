@@ -95,7 +95,7 @@ fn test_fork() {
 		let tabs = tr3.list(&Atom::from("logfile")).await;
 		println!("tabs === {:?}", tabs);
 		let tm = TabMeta::new(sinfo::EnumType::Str, sinfo::EnumType::Str);
-		tr3.fork_tab(Atom::from("./testlogfile/hello"), Atom::from("./testlogfile/hello_fork"), tm).await;
+		tr3.fork_tab(Atom::from("logfile"), Atom::from("./testlogfile/hello"), Atom::from("./testlogfile/hello_fork"), tm).await;
 		let p = tr3.prepare().await;
 		println!("prepare ==== {:?}", p);
 		let c = tr3.commit().await;
@@ -184,7 +184,7 @@ fn test_load_data() {
 
 		let mut tr4 = mgr.transaction(true).await;
 		let tm = TabMeta::new(sinfo::EnumType::Str, sinfo::EnumType::Str);
-		tr4.fork_tab(Atom::from("./testlogfile/hello_fork"), Atom::from("./testlogfile/hello_fork2"), tm).await;
+		tr4.fork_tab(Atom::from("logfile"), Atom::from("./testlogfile/hello_fork"), Atom::from("./testlogfile/hello_fork2"), tm).await;
 		tr4.prepare().await;
 		tr4.commit().await;
 

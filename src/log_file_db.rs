@@ -25,7 +25,7 @@ use crate::tabs::{TabLog, Tabs, Prepare};
 use crate::db::BuildDbType;
 use crate::tabs::TxnType;
 use crate::fork::{ALL_TABLES, TableMetaInfo, build_fork_chain};
-use bon::{Decode, ReadBuffer};
+use bon::{Decode, Encode, ReadBuffer, WriteBuffer};
 
 lazy_static! {
 	pub static ref STORE_RUNTIME: MultiTaskRuntime<()> = {
@@ -82,7 +82,7 @@ impl LogFileDB {
 			let tab_name = Atom::decode(&mut ReadBuffer::new(k, 0)).unwrap();
 			let meta = TableMetaInfo::decode(&mut ReadBuffer::new(v.clone().to_vec().as_ref(), 0)).unwrap();
 			println!("tab_name = {:?}, meta = {:?}", tab_name, meta);
-			ALL_TABLES.lock().unwrap().insert(tab_name, meta);
+			ALL_TABLES.lock().await.insert(tab_name, meta);
 		}
 
 		LogFileDB(Arc::new(Tabs::new()))
@@ -90,10 +90,10 @@ impl LogFileDB {
 
 	pub async fn open(tab: &Atom) -> SResult<LogFileTab> {
 		println!("open tab_name = {:?}", tab);
-		for (k, v) in ALL_TABLES.lock().unwrap().iter() {
+		for (k, v) in ALL_TABLES.lock().await.iter() {
 			println!("open k = {:?}, v = {:?}", k, v);
 		}
-		let chains = build_fork_chain(tab.clone());
+		let chains = build_fork_chain(tab.clone()).await;
 		println!("tab = {:?}, fork chains == {:?}", tab, chains);
 		Ok(LogFileTab::new(tab, &chains).await)
 	}
@@ -172,7 +172,6 @@ pub struct FileMemTxn {
 	root: BinMap,
 	old: BinMap,
 	rwlog: XHashMap<Bin, RwLog>,
-	fork_names: Vec<Atom>, // 分叉名字是否有冲突
 	state: TxState,
 }
 
@@ -191,7 +190,6 @@ impl FileMemTxn {
 			tab,
 			old: root,
 			rwlog: XHashMap::default(),
-			fork_names: vec![],
 			state: TxState::Ok,
 		};
 		return RefLogFileTxn(Mutex::new(txn))
@@ -329,27 +327,63 @@ impl FileMemTxn {
 	}
 
 	/// 强制产生分裂
-	pub async fn force_fork_inner(&self) -> Result<usize> {
+	async fn force_fork_inner(&self) -> Result<usize> {
 		self.tab.1.clone().force_fork().await
 	}
 
-	pub async fn fork_prepare_inner(&self) -> DBResult {
-		// 检查是否有冲突的表名
-		let len = self.fork_names.len();
-		let mut set = XHashSet::default();
-		for v in self.fork_names.iter() {
-			set.insert(v);
+	pub async fn fork_prepare_inner(&self, ware: Atom, tab_name: Atom, fork_tab_name: Atom, meta: TabMeta) -> DBResult {
+		// 检查元信息表中是否有重复的表名
+		if let Some(_) = ALL_TABLES.lock().await.get(&fork_tab_name) {
+			return Err("duplicate fork tab name in meta tab".to_string())
 		}
-
-		if len == set.len() {
-			Ok(())
-		} else {
-			Err("duplicate fork tab name".to_string())
-		}
+		Ok(())
 	}
 
-	pub async fn fork_commit_inner(&self) -> DBResult {
-		self.tab.1.clone().force_fork().await;
+	/// 执行真正的分裂
+	pub async fn fork_commit_inner(&self, ware: Atom, tab_name: Atom, fork_tab_name: Atom, meta: TabMeta) -> DBResult {
+		let index = match self.force_fork_inner().await {
+			Ok(idx) => idx,
+			Err(e) => return Err(e.to_string())
+		};
+		println!("fork_index = {:?}", index);
+
+		let mut tmi = TableMetaInfo::new(fork_tab_name.clone(), meta);
+		tmi.parent = Some(tab_name.clone());
+
+		tmi.parent_log_id = Some(index);
+		tmi.parent = Some(tab_name);
+
+		// TODO: 找到父表的元信息，将它的引用计数减一
+
+		let mut wb = WriteBuffer::new();
+		tmi.encode(&mut wb);
+		let mut wb1 = WriteBuffer::new();
+		fork_tab_name.encode(&mut wb1);
+
+		let db_path = env::var("DB_PATH").unwrap_or("./".to_string());
+
+		ALL_TABLES.lock().await.insert(fork_tab_name, tmi);
+
+		let mut path = PathBuf::new();
+		path.push(db_path);
+		path.push(DB_META_TAB_NAME);
+
+		let file = match AsyncLogFileStore::open(path, 8000, 200 * 1024 * 1024, None).await {
+			Err(e) => {
+				panic!("!!!!!!open table = {:?} failed, e: {:?}", "tabs_meta", e);
+			},
+			Ok(store) => store
+		};
+
+		let mut store = AsyncLogFileStore {
+			removed: Arc::new(SpinLock::new(XHashMap::default())),
+			map: Arc::new(SpinLock::new(BTreeMap::new())),
+			log_file: file.clone(),
+		};
+
+		// 新创建的分叉表信息写入元信息表中
+		store.write(wb1.bytes, wb.bytes).await;
+
 		Ok(())
 	}
 
@@ -411,15 +445,15 @@ impl RefLogFileTxn {
 	}
 
 	/// fork 预提交
-	pub async fn fork_prepare(&self) -> DBResult {
+	pub async fn fork_prepare(&self, ware: Atom, tab_name: Atom, fork_tab_name: Atom, meta: TabMeta) -> DBResult {
 		let mut txn = self.0.lock().await;
-		txn.fork_prepare_inner().await
+		txn.fork_prepare_inner(ware, tab_name, fork_tab_name, meta).await
 	}
 
 	/// fork 提交
-	pub async fn fork_commit(&self) -> DBResult {
+	pub async fn fork_commit(&self, ware: Atom, tab_name: Atom, fork_tab_name: Atom, meta: TabMeta) -> DBResult {
 		let mut txn = self.0.lock().await;
-		txn.fork_commit_inner().await
+		txn.fork_commit_inner(ware, tab_name, fork_tab_name, meta).await
 	}
 
 	/// fork 回滚
