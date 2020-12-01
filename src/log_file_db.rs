@@ -857,6 +857,8 @@ impl LogFileTab {
 		};
 
 		let mut path = PathBuf::new();
+		let db_path = env::var("DB_PATH").unwrap_or(".".to_string());
+		path.push(db_path);
 		let tab_name = tab.clone();
 		let tab_name_clone = tab.clone();
 		path.push(tab_name.clone().to_string());
