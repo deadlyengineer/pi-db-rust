@@ -75,14 +75,17 @@ impl LogFileDB {
 
 		file.load(&mut store, None, false).await;
 
+		let mut tabs = Tabs::new();
+
 		let map = store.map.lock();
 		for (k, v) in map.iter() {
 			let tab_name = Atom::decode(&mut ReadBuffer::new(k, 0)).unwrap();
 			let meta = TableMetaInfo::decode(&mut ReadBuffer::new(v.clone().to_vec().as_ref(), 0)).unwrap();
+			tabs.set_tab_meta(tab_name.clone(), Arc::new(meta.meta.clone())).await;
 			ALL_TABLES.lock().await.insert(tab_name, meta);
 		}
 
-		LogFileDB(Arc::new(Tabs::new()))
+		LogFileDB(Arc::new(tabs))
 	}
 
 	pub async fn open(tab: &Atom) -> SResult<LogFileTab> {
