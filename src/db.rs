@@ -92,7 +92,7 @@ pub enum EventType{
 	Tab{key: Bin, value: Option<Bin>},
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TxState {
 	Ok = 1,
 	Doing,
