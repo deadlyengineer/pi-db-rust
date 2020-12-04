@@ -1260,18 +1260,22 @@ impl Tr {
 					match txn.modify(tkv, lock_time, read_lock).await {
 						Ok(_) => {
 							self.state = TxState::Ok;
-							return Ok(())
 						}
 						Err(e) => {
 							self.state = TxState::Err;
-							return Err(e)
+							break;
 						}
 					}
 				}
 				Err(e) => return Err(e)
 			}
 		}
-		Err("hello".to_string())
+
+		if self.state == TxState::Ok {
+			Ok(())
+		} else {
+			Err("Tr::modify error".to_string())
+		}
 	}
 	
 	/**
