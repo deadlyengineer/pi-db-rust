@@ -1213,7 +1213,8 @@ impl Tr {
 		let mut vec = Vec::with_capacity(len);
 		vec.resize(len, Default::default());
 		let rvec = Arc::new(Mutex::new((len, vec)));
-		
+		let mut res = vec![];
+
 		let map = tab_map(arr);
 		for ((ware_name, tab_name), val) in map.into_iter() {
 			let tkv = Arc::new(val);
@@ -1221,20 +1222,30 @@ impl Tr {
 				Ok(t) => match t.query(tkv, lock_time, read_lock).await {
 					Ok(vec) => {
 						match merge_result(&rvec, vec).await {
-							Ok(v) => return Ok(v),
-							Err(e) => return Err(e)
+							Ok(v) => {
+								self.state = TxState::Ok;
+								res.extend(v.into_iter());
+							}
+							Err(e) => {
+								self.state = TxState::Err;
+								break
+							}
 						}
 					}
 					Err(e) => {
 						self.state = TxState::Err;
-						return Err(e)
+						break
 					}
 				},
 				Err(e) => return Err(e)
 			}
 		}
 
-		Err("hello".to_string())
+		if self.state == TxState::Ok {
+			Ok(res)
+		} else {
+			Err("Tr::query error".to_string())
+		}
 	}
 
 	/**
