@@ -142,7 +142,9 @@ impl LogFileDBSnapshot {
 	}
 	// 创建一个meta事务
 	pub fn meta_txn(&self, _id: &Guid) -> Arc<LogFileMetaTxn> {
-		Arc::new(LogFileMetaTxn)
+		Arc::new(LogFileMetaTxn {
+			alters: Arc::new(Mutex::new(XHashMap::default())),
+		})
 	}
 	// 元信息的预提交
 	pub async fn prepare(&self, id: &Guid) -> DBResult{
@@ -667,75 +669,14 @@ impl Iter for MemKeyIter{
 }
 
 #[derive(Clone)]
-pub struct LogFileMetaTxn;
+pub struct LogFileMetaTxn {
+	alters: Arc<Mutex<XHashMap<Atom, Option<Arc<TabMeta>>>>>,
+}
 
 impl LogFileMetaTxn {
 	// 创建表、修改指定表的元数据
 	pub async fn alter(&self, tab_name: &Atom, meta: Option<Arc<TabMeta>>) -> DBResult {
-		if let Some(_) = ALL_TABLES.lock().await.get(tab_name) {
-			return Err(format!("tab_name: {:?} exist", tab_name))
-		}
-		let mut kt = WriteBuffer::new();
-		tab_name.clone().encode(&mut kt);
-		let db_path = env::var("DB_PATH").unwrap_or("./".to_string());
-		let mut path = PathBuf::new();
-		path.push(db_path.clone());
-		path.push(DB_META_TAB_NAME);
-
-		let file = match AsyncLogFileStore::open(path, 8000, 200 * 1024 * 1024, None).await {
-			Err(e) => {
-				panic!("!!!!!!open table = {:?} failed, e: {:?}", "tabs_meta", e);
-			},
-			Ok(store) => store
-		};
-
-		let mut store = AsyncLogFileStore {
-			removed: Arc::new(SpinLock::new(XHashMap::default())),
-			map: Arc::new(SpinLock::new(BTreeMap::new())),
-			log_file: file.clone(),
-		};
-
-		match meta {
-			Some(m) => {
-				let mt = TabMeta::new(m.k.clone(), m.v.clone());
-				let tmi = TableMetaInfo::new(tab_name.clone(), mt);
-				let mut vt = WriteBuffer::new();
-				tmi.encode(&mut vt);
-
-				// 新创建的表加入ALL_TABLES的缓存
-				let meta_name = Atom::from(db_path + &DB_META_TAB_NAME);
-				ALL_TABLES.lock().await.insert(meta_name, tmi);
-
-				// 新创建表的元信息写入元信息表中
-				store.write(kt.bytes, vt.bytes).await;
-			}
-			None => {
-				let mut parent = None;
-				match ALL_TABLES.lock().await.get(&tab_name) {
-					Some(tab) => {
-						if tab.ref_count > 0 {
-							return Err(format!("delete tab: {:?} failed, ref_count = {:?}", tab.tab_name, tab.ref_count))
-						} else {
-							store.remove(kt.bytes).await;
-							parent = tab.parent.clone();
-						}
-					}
-					None => {
-						return Err(format!("delete tab: {:?} not found", tab_name))
-					}
-				}
-				ALL_TABLES.lock().await.remove(&tab_name);
-				// 找到他的父表，将父表的引用计数减一
-				let mut wb = WriteBuffer::new();
-				parent.clone().unwrap().encode(&mut wb);
-				ALL_TABLES.lock().await.entry(parent.clone().unwrap()).and_modify(|t| {
-					t.ref_count -= 1;
-					let mut wb2 = WriteBuffer::new();
-					t.encode(&mut wb2);
-					store.write(wb.bytes, wb2.bytes);
-				});
-			}
-		}
+		self.alters.lock().await.insert(tab_name.clone(), meta);
 		Ok(())
 	}
 	// 快照拷贝表
@@ -757,10 +698,77 @@ impl LogFileMetaTxn {
 	}
 	// 提交一个事务
 	pub async fn commit(&self) -> CommitResult {
+		for (tab_name, meta) in self.alters.lock().await.iter() {
+			if let Some(_) = ALL_TABLES.lock().await.get(tab_name) {
+				return Err(format!("tab_name: {:?} exist", tab_name))
+			}
+			let mut kt = WriteBuffer::new();
+			tab_name.clone().encode(&mut kt);
+			let db_path = env::var("DB_PATH").unwrap_or("./".to_string());
+			let mut path = PathBuf::new();
+			path.push(db_path.clone());
+			path.push(DB_META_TAB_NAME);
+
+			let file = match AsyncLogFileStore::open(path, 8000, 200 * 1024 * 1024, None).await {
+				Err(e) => {
+					panic!("!!!!!!open table = {:?} failed, e: {:?}", "tabs_meta", e);
+				},
+				Ok(store) => store
+			};
+
+			let mut store = AsyncLogFileStore {
+				removed: Arc::new(SpinLock::new(XHashMap::default())),
+				map: Arc::new(SpinLock::new(BTreeMap::new())),
+				log_file: file.clone(),
+			};
+
+			match meta {
+				Some(m) => {
+					let mt = TabMeta::new(m.k.clone(), m.v.clone());
+					let tmi = TableMetaInfo::new(tab_name.clone(), mt);
+					let mut vt = WriteBuffer::new();
+					tmi.encode(&mut vt);
+
+					// 新创建的表加入ALL_TABLES的缓存
+					let meta_name = Atom::from(db_path + &DB_META_TAB_NAME);
+					ALL_TABLES.lock().await.insert(meta_name, tmi);
+
+					// 新创建表的元信息写入元信息表中
+					store.write(kt.bytes, vt.bytes).await;
+				}
+				None => {
+					let mut parent = None;
+					match ALL_TABLES.lock().await.get(&tab_name) {
+						Some(tab) => {
+							if tab.ref_count > 0 {
+								return Err(format!("delete tab: {:?} failed, ref_count = {:?}", tab.tab_name, tab.ref_count))
+							} else {
+								store.remove(kt.bytes).await;
+								parent = tab.parent.clone();
+							}
+						}
+						None => {
+							return Err(format!("delete tab: {:?} not found", tab_name))
+						}
+					}
+					ALL_TABLES.lock().await.remove(&tab_name);
+					// 找到他的父表，将父表的引用计数减一
+					let mut wb = WriteBuffer::new();
+					parent.clone().unwrap().encode(&mut wb);
+					ALL_TABLES.lock().await.entry(parent.clone().unwrap()).and_modify(|t| {
+						t.ref_count -= 1;
+						let mut wb2 = WriteBuffer::new();
+						t.encode(&mut wb2);
+						store.write(wb.bytes, wb2.bytes);
+					});
+				}
+			}
+		}
 		Ok(XHashMap::with_capacity_and_hasher(0, Default::default()))
 	}
 	// 回滚一个事务
 	pub async fn rollback(&self) -> DBResult {
+		self.alters.lock().await.clear();
 		Ok(())
 	}
 }
