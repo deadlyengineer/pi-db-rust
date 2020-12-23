@@ -13,6 +13,7 @@ use ordmap::asbtree::{Tree, new};
 use atom::Atom;
 use guid::{Guid, GuidGen};
 use r#async::lock::mutex_lock::Mutex;
+use r#async::rt::{AsyncRuntime, AsyncMap, multi_thread::MultiTaskRuntime};
 use bon::{ReadBuffer, Decode, Encode, WriteBuffer, ReadBonErr};
 
 use crate::db::{SResult, IterResult, KeyIterResult, Filter, TabKV, TxCallback, TxState, Event, Bin, RwLog, TabMeta, CommitResult, DBResult};
@@ -118,7 +119,7 @@ impl Mgr {
 	* @param writable 是否为写事务
 	* @returns 返回事务
 	*/
-	pub async fn transaction(&self, writable: bool) -> Tr {
+	pub async fn transaction(&self, writable: bool, rt: Option<MultiTaskRuntime<()>>) -> Tr {
 		let id = self.guid.gen(0);
 		let ware_map = {
 			self.ware_map.lock().await.clone()
@@ -140,6 +141,7 @@ impl Mgr {
 			id: id.clone(),
 			ware_log_map: map,
 			state: TxState::Ok,
+			rt,
 			..Default::default()
 		}
 	}
@@ -931,7 +933,8 @@ pub struct Tr {
 	state: TxState,
 	tab_txns: XHashMap<(Atom, Atom), Arc<DatabaseTabTxn>>, //表事务表
 	meta_txns: XHashMap<Atom, Arc<DatabaseMetaTxn>>, //元信息事务表
-	fork_txns: XHashMap<(Atom, Atom, Atom), (TabMeta, Arc<DatabaseTabTxn>)> // 这个事务中产生的所有分叉操作
+	fork_txns: XHashMap<(Atom, Atom, Atom), (TabMeta, Arc<DatabaseTabTxn>)>, // 这个事务中产生的所有分叉操作
+	rt: Option<MultiTaskRuntime<()>>
 }
 
 impl Tr {
@@ -1060,28 +1063,41 @@ impl Tr {
 		}
 		// println!(" ======== pi_db::mgr::commit txid: {:?}, alter_len: {:?}, tab_txn_len: {:?}", self.id.time(), alter_len, self.tab_txns.len());
 		let count = Arc::new(AtomicUsize::new(len));
+		let rt = self.rt.as_ref().unwrap().clone();
+		let mut async_map = rt.map::<bool>();
 
 		//处理每个表的提交
 		for (txn_name, val) in self.tab_txns.iter_mut() {
-			match val.commit().await {
-				Ok(logs) => {
-					for (_k, v) in logs.into_iter() {
-						match v {
-							RwLog::Write(_val) => {},
-							_ => (),
+			let val = val.clone();
+			async_map.join(AsyncRuntime::Multi(rt.clone()), async move {
+				match val.commit().await {
+					Ok(logs) => {
+						Ok(true)
+					}
+					Err(e) => {
+						Ok(false)
+					}
+				}
+			});
+		}
+
+		match async_map.map(AsyncRuntime::Multi(rt.clone())).await {
+			Ok(res) => {
+				for r in res {
+					if r.is_ok() && r.unwrap() {
+						if count.fetch_sub(1, Ordering::SeqCst) == 1 {
+							self.state = TxState::Commited;
+							return Ok(())
 						}
 					}
-					if count.fetch_sub(1, Ordering::SeqCst) == 1 {
-						self.state = TxState::Commited;
-						return Ok(())
-					}
-				}
-				Err(e) => {
-					self.state = TxState::CommitFail;
-					return Err(e)
 				}
 			}
+			Err(e) => {
+				self.state = TxState::CommitFail;
+				return Err(e.to_string())
+			}
 		}
+
 		//处理tab alter的提交
 		for val in self.meta_txns.values() {
 			match val.commit().await {
