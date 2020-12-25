@@ -1280,28 +1280,53 @@ impl Tr {
 		let map = tab_map(arr);
 		self.state = TxState::Doing;
 
+		let rt = self.rt.as_ref().unwrap().clone();
+		let mut async_map = rt.map::<bool>();
+
+		let mut txns = vec![];
 		for ((ware_name, tab_name), val) in map.into_iter() {
-			let tkv = Arc::new(val);
 			match self.build(&ware_name, &tab_name).await {
 				Ok(txn) => {
-					match txn.modify(tkv, lock_time, read_lock).await {
-						Ok(_) => {
-							self.state = TxState::Ok;
-						}
-						Err(e) => {
-							self.state = TxState::Err;
-							break;
-						}
-					}
+					txns.push((txn, val));
 				}
-				Err(e) => return Err(e)
+				Err(e) => {
+					return Err(e.to_string());
+				}
 			}
 		}
 
-		if self.state == TxState::Ok {
-			Ok(())
+		for (txn, tkv) in txns {
+			async_map.join(AsyncRuntime::Multi(rt.clone()), async move {
+				match txn.modify(Arc::new(tkv), lock_time, read_lock).await {
+					Ok(_) => {
+						Ok(true)
+					}
+					Err(e) => {
+						Ok(false)
+					}
+				}
+			});
+		}
+
+		let mut error = false;
+		match async_map.map(AsyncRuntime::Multi(rt.clone())).await {
+			Ok(res) => {
+				for r in res {
+					if r.is_ok() && !r.unwrap() {
+						error = true;
+						break;
+					}
+				}
+			}
+			Err(e) => {
+				error = true;
+			}
+		}
+
+		if error {
+			Err("modify failed".to_string())
 		} else {
-			Err("Tr::modify error".to_string())
+			Ok(())
 		}
 	}
 	
