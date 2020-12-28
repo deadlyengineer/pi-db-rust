@@ -28,10 +28,7 @@ use crate::fork::{ALL_TABLES, TableMetaInfo, build_fork_chain};
 use bon::{Decode, Encode, ReadBuffer, WriteBuffer};
 
 lazy_static! {
-	pub static ref STORE_RUNTIME: MultiTaskRuntime<()> = {
-        let pool = MultiTaskPool::new("File-Runtime".to_string(), num_cpus::get(), 1024 * 1024, 10, Some(10));
-        pool.startup(true)
-    };
+	pub static ref STORE_RUNTIME: Arc<RwLock<Option<MultiTaskRuntime<()>>>> = Arc::new(RwLock::new(None));
 }
 
 pub const DB_META_TAB_NAME: &'static str = "tabs_meta";
@@ -806,7 +803,7 @@ impl PairLoader for AsyncLogFileStore {
 impl AsyncLogFileStore {
 	async fn open<P: AsRef<Path> + std::fmt::Debug>(path: P, buf_len: usize, file_len: usize, log_file_index: Option<usize>) -> Result<LogFile> {
 		// println!("AsyncLogFileStore open ====== {:?}, log_index = {:?}", path, log_file_index);
-		match LogFile::open(STORE_RUNTIME.clone(), path, buf_len, file_len, log_file_index).await {
+		match LogFile::open(STORE_RUNTIME.read().await.as_ref().unwrap().clone(), path, buf_len, file_len, log_file_index).await {
             Err(e) =>panic!("LogFile::open error {:?}", e),
             Ok(file) => Ok(file),
 		}
