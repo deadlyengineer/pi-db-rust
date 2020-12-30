@@ -28,10 +28,7 @@ use crate::fork::{ALL_TABLES, TableMetaInfo, build_fork_chain};
 use bon::{Decode, Encode, ReadBuffer, WriteBuffer};
 
 lazy_static! {
-	pub static ref STORE_RUNTIME: MultiTaskRuntime<()> = {
-        let pool = MultiTaskPool::new("File-Runtime".to_string(), num_cpus::get(), 1024 * 1024, 10, Some(10));
-        pool.startup(true)
-    };
+	pub static ref STORE_RUNTIME: Arc<RwLock<Option<MultiTaskRuntime<()>>>> = Arc::new(RwLock::new(None));
 }
 
 pub const DB_META_TAB_NAME: &'static str = "tabs_meta";
@@ -292,28 +289,34 @@ impl FileMemTxn {
 
 		let async_tab = self.tab.1.clone();
 
+		let mut insert_pairs: Vec<(&[u8], &[u8])> = vec![];
+		let mut delete_keys: Vec<&[u8]> = vec![];
+
 		for (k, rw_v) in &logs {
 			match rw_v {
 				RwLog::Read => {},
 				_ => {
 					match rw_v {
 						RwLog::Write(None) => {
-							debug!("delete key = {:?}", k);
-							if let Err(_) =  async_tab.remove(k.to_vec()).await {
-								return Err("remove error".to_string())
-							}
+							delete_keys.push(k);
 						}
 						RwLog::Write(Some(v)) => {
-							debug!("insert k = {:?}, v = {:?}", k, v);
-							if let Err(_) = async_tab.write(k.to_vec(), v.to_vec()).await {
-								return Err("write error".to_string())
-							}
+							insert_pairs.push((k, v));
 						}
 						_ => {}
 					}
 				}
 			}
 		}
+
+		if insert_pairs.len() > 0 {
+			async_tab.write_batch(&insert_pairs).await;
+		}
+
+		if delete_keys.len() > 0 {
+			async_tab.remove_batch(&delete_keys).await;
+		}
+
 		Ok(logs)
 	}
 	//回滚
@@ -800,9 +803,29 @@ impl PairLoader for AsyncLogFileStore {
 impl AsyncLogFileStore {
 	async fn open<P: AsRef<Path> + std::fmt::Debug>(path: P, buf_len: usize, file_len: usize, log_file_index: Option<usize>) -> Result<LogFile> {
 		// println!("AsyncLogFileStore open ====== {:?}, log_index = {:?}", path, log_file_index);
-		match LogFile::open(STORE_RUNTIME.clone(), path, buf_len, file_len, log_file_index).await {
+		match LogFile::open(STORE_RUNTIME.read().await.as_ref().unwrap().clone(), path, buf_len, file_len, log_file_index).await {
             Err(e) =>panic!("LogFile::open error {:?}", e),
             Ok(file) => Ok(file),
+		}
+	}
+
+	async fn write_batch(&self, pairs: &[(&[u8], &[u8])]) -> Result<()> {
+		let mut id = 0;
+		for (key, value) in pairs {
+			id = self.log_file.append(LogMethod::PlainAppend, key, value);
+		}
+		
+		match self.log_file.delay_commit(id, false, 0).await {
+			Ok(_) => {
+				for (key, value) in pairs {
+					self.map.lock().insert(key.to_vec(), value.clone().into());
+				}
+				Ok(())
+			}
+			Err(e) => {
+				println!("write batch error");
+				Err(e)
+			}
 		}
 	}
 
@@ -826,6 +849,23 @@ impl AsyncLogFileStore {
         }
 
         None
+	}
+
+	async fn remove_batch(&self, keys: &[&[u8]]) -> Result<()> {
+		let mut id = 0;
+		for key in keys {
+			id = self.log_file.append(LogMethod::Remove, key, &[]);
+		}
+
+		match self.log_file.delay_commit(id, false, 10).await {
+			Ok(_) => {
+				for key in keys {
+					self.map.lock().remove(key.clone());
+				}
+				Ok(())
+			}
+			Err(e) => Err(e)
+		}
 	}
 
 	pub async fn remove(&self, key: Vec<u8>) -> Result<Option<Vec<u8>>> {
