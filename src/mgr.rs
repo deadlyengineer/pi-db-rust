@@ -1529,7 +1529,7 @@ impl Tr {
 						return Err(e)
 					}
 				},
-				_ => return Err(String::from("WareNotFound"))
+				_ => return Err(format!("WareNotFound: {:?}", ware_name))
 			}
 		};
 		self.tab_txns.insert(txn_key, txn.clone());
