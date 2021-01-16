@@ -923,7 +923,7 @@ impl LogFileTab {
 		} else {
 			None
 		};
-		println!("LogFileTab::new  log_file_index = {:?}, tab = {:?}, chains = {:?}", log_file_index, tab, chains);
+		// println!("LogFileTab::new  log_file_index = {:?}, tab = {:?}, chains = {:?}", log_file_index, tab, chains);
 		let file = match AsyncLogFileStore::open(path.clone(), 8000, 200 * 1024 * 1024, log_file_index).await {
 			Err(e) => panic!("!!!!!!open table = {:?} failed, e: {:?}", tab_name, e),
 			Ok(file) => file
@@ -934,8 +934,6 @@ impl LogFileTab {
 			map: Arc::new(SpinLock::new(BTreeMap::new())),
 			log_file: file.clone()
 		};
-
-		println!("LogFileTab new path = {:?}", path);
 
 		file.load(&mut store, Some(path), false).await;
 
