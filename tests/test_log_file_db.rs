@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use pi_db::mgr::{ DatabaseWare, Mgr };
+use pi_db::{log_file_db::STORE_RUNTIME, mgr::{ DatabaseWare, Mgr }};
 use pi_db::log_file_db::LogFileDB;
 use atom::Atom;
 use sinfo;
@@ -13,12 +13,14 @@ use bon::WriteBuffer;
 fn test_log_file_db() {
 	let pool = MultiTaskPool::new("Store-Runtime".to_string(), 4, 1024 * 1024, 10, Some(10));
 	let rt: MultiTaskRuntime<()>  = pool.startup(true);
+	let rt1 = rt.clone();
 
-	let _ = rt.spawn(rt.alloc(), async move {
+	let _ = rt1.spawn(rt.alloc(), async move {
+		*STORE_RUNTIME.write().await = Some(rt.clone());
 		let mgr = Mgr::new(GuidGen::new(0, 0));
 		let ware = DatabaseWare::new_log_file_ware(LogFileDB::new(Atom::from("./testlogfile"), 1024 * 1024 * 1024).await);
 		let _ = mgr.register(Atom::from("logfile"), Arc::new(ware)).await;
-		let mut tr = mgr.transaction(true).await;
+		let mut tr = mgr.transaction(true, Some(rt.clone())).await;
 
 		let meta = TabMeta::new(sinfo::EnumType::Str, sinfo::EnumType::Str);
 		let meta1 = TabMeta::new(sinfo::EnumType::Str, sinfo::EnumType::Str);
@@ -66,14 +68,14 @@ fn test_log_file_db() {
 			})
 		}
 
-		let mut tr2 = mgr.transaction(true).await;
+		let mut tr2 = mgr.transaction(true, Some(rt.clone())).await;
 
 		let r = tr2.modify(writes, None, false).await;
 		println!("logfile result = {:?}", r);
 		let p = tr2.prepare().await;
 		tr2.commit().await;
 
-		let mut tr3 = mgr.transaction(false).await;
+		let mut tr3 = mgr.transaction(false, Some(rt.clone())).await;
 		item1.value = None;
 
 		let q = tr3.query(vec![item1], None, false).await;
@@ -81,7 +83,7 @@ fn test_log_file_db() {
 		tr3.prepare().await;
 		tr3.commit().await;
 
-		let mut tr4 = mgr.transaction(false).await;
+		let mut tr4 = mgr.transaction(false, Some(rt.clone())).await;
 		let size = tr4.tab_size(&Atom::from("logfile"), &Atom::from("./testlogfile/hello")).await;
 		println!("tab size = {:?}", size);
 		{
@@ -113,12 +115,14 @@ fn test_log_file_db() {
 fn write_test_data() {
 	let pool = MultiTaskPool::new("Store-Runtime".to_string(), 4, 1024 * 1024, 10, Some(10));
 	let rt: MultiTaskRuntime<()>  = pool.startup(true);
+	let rt1 = rt.clone();
 
-	let _ = rt.spawn(rt.alloc(), async move {
+	let _ = rt1.spawn(rt.alloc(), async move {
+		*STORE_RUNTIME.write().await = Some(rt.clone());
 		let mgr = Mgr::new(GuidGen::new(0, 0));
 		let ware = DatabaseWare::new_log_file_ware(LogFileDB::new(Atom::from("./testlogfile"), 1024 * 1024 * 1024).await);
 		let _ = mgr.register(Atom::from("logfile"), Arc::new(ware)).await;
-		let mut tr = mgr.transaction(true).await;
+		let mut tr = mgr.transaction(true, Some(rt.clone())).await;
 
 		let meta = TabMeta::new(sinfo::EnumType::Str, sinfo::EnumType::Str);
 		let meta1 = TabMeta::new(sinfo::EnumType::Str, sinfo::EnumType::Str);
@@ -152,7 +156,7 @@ fn write_test_data() {
 			})
 		}
 
-		let mut tr2 = mgr.transaction(true).await;
+		let mut tr2 = mgr.transaction(true, Some(rt.clone())).await;
 
 		let r = tr2.modify(writes, None, false).await;
 		println!("logfile result = {:?}", r);
@@ -161,7 +165,7 @@ fn write_test_data() {
 		tr2.commit().await;
 
 
-		let mut tr4 = mgr.transaction(false).await;
+		let mut tr4 = mgr.transaction(false, Some(rt.clone())).await;
 
 		let size = tr4.tab_size(&Atom::from("logfile"), &Atom::from("./testlogfile/testtab")).await;
 		println!("tab size = {:?}", size);
@@ -179,12 +183,14 @@ fn write_test_data() {
 fn read_test_data() {
 	let pool = MultiTaskPool::new("Store-Runtime".to_string(), 4, 1024 * 1024, 10, Some(10));
 	let rt: MultiTaskRuntime<()>  = pool.startup(true);
+	let rt1 = rt.clone();
 
-	let _ = rt.spawn(rt.alloc(), async move {
+	let _ = rt1.spawn(rt.alloc(), async move {
+		*STORE_RUNTIME.write().await = Some(rt.clone());
 		let mgr = Mgr::new(GuidGen::new(0, 0));
 		let ware = DatabaseWare::new_log_file_ware(LogFileDB::new(Atom::from("./testlogfile"), 1024 * 1024 * 1024).await);
 		let _ = mgr.register(Atom::from("logfile"), Arc::new(ware)).await;
-		let mut tr = mgr.transaction(true).await;
+		let mut tr = mgr.transaction(true, Some(rt.clone())).await;
 
 		let meta = TabMeta::new(sinfo::EnumType::Str, sinfo::EnumType::Str);
 
@@ -197,7 +203,7 @@ fn read_test_data() {
 		let info = tr.tab_info(&Atom::from("logfile"), &Atom::from("./testlogfile/testtab")).await;
 		println!("info ---- {:?} ", info);
 
-		let mut tr4 = mgr.transaction(false).await;
+		let mut tr4 = mgr.transaction(false, Some(rt.clone())).await;
 		let size = tr4.tab_size(&Atom::from("logfile"), &Atom::from("./testlogfile/testtab")).await;
 		println!("tab size = {:?}", size);
 		{
