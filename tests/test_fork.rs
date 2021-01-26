@@ -4,7 +4,7 @@ use std::time::Duration;
 use std::sync::Mutex;
 use atom::Atom;
 use bon::{Encode, Decode, WriteBuffer, ReadBuffer, ReadBonErr};
-use pi_db::mgr::{ DatabaseWare, Mgr };
+use pi_db::{log_file_db, mgr::{ DatabaseWare, Mgr }};
 use pi_db::log_file_db::LogFileDB;
 use sinfo;
 use guid::GuidGen;
@@ -12,17 +12,22 @@ use r#async::rt::multi_thread::{MultiTaskPool, MultiTaskRuntime};
 use pi_db::db::{TabKV, TabMeta};
 use pi_db::fork::TableMetaInfo;
 
+use log_file_db::STORE_RUNTIME;
+
 #[test]
 fn test_fork() {
 	let pool = MultiTaskPool::new("Store-Runtime".to_string(), 4, 1024 * 1024, 10, Some(10));
 	let rt: MultiTaskRuntime<()>  = pool.startup(true);
+	let rt1 = rt.clone();
 
-	let _ = rt.spawn(rt.alloc(), async move {
+	let _ = rt1.spawn(rt.alloc(), async move {
+		*STORE_RUNTIME.write().await = Some(rt.clone());
+
 		let mgr = Mgr::new(GuidGen::new(0, 0));
 		let ware = DatabaseWare::new_log_file_ware(LogFileDB::new(Atom::from("./testlogfile"), 1024 * 1024 * 1024).await);
 		let _ = mgr.register(Atom::from("logfile"), Arc::new(ware)).await;
 
-		let mut tr = mgr.transaction(true).await;
+		let mut tr = mgr.transaction(true, Some(rt.clone())).await;
 		let meta = TabMeta::new(sinfo::EnumType::Str, sinfo::EnumType::Bin);
 		let meta1 = TabMeta::new(sinfo::EnumType::Str, sinfo::EnumType::Str);
 
@@ -84,14 +89,14 @@ fn test_fork() {
 			index: 0
 		};
 
-		let mut tr2 = mgr.transaction(true).await;
+		let mut tr2 = mgr.transaction(true, Some(rt.clone())).await;
 		tr2.modify(vec![item1, item2, item3, item4], None, false).await;
 		tr2.prepare().await;
 		tr2.commit().await;
 
 
 		// 需要开一个新的事务来执行分叉操作？？
-		let mut tr3 = mgr.transaction(true).await;
+		let mut tr3 = mgr.transaction(true, Some(rt.clone())).await;
 		let tabs = tr3.list(&Atom::from("logfile")).await;
 		println!("tabs === {:?}", tabs);
 		let tm = TabMeta::new(sinfo::EnumType::Str, sinfo::EnumType::Str);
@@ -101,7 +106,7 @@ fn test_fork() {
 		let c = tr3.commit().await;
 		println!("commit=== {:?}", c);
 
-		let mut tr4 = mgr.transaction(true).await;
+		let mut tr4 = mgr.transaction(true, Some(rt.clone())).await;
 
 		let mut k = WriteBuffer::new();
 		k.write_bin(b"hello5", 0..6);
@@ -142,13 +147,15 @@ fn test_fork() {
 fn test_load_data() {
 	let pool = MultiTaskPool::new("Store-Runtime".to_string(), 4, 1024 * 1024, 10, Some(10));
 	let rt: MultiTaskRuntime<()>  = pool.startup(true);
+	let rt1 = rt.clone();
 
-	let _ = rt.spawn(rt.alloc(), async move {
+	let _ = rt1.spawn(rt.alloc(), async move {
+		*STORE_RUNTIME.write().await = Some(rt.clone());
 		let mgr = Mgr::new(GuidGen::new(0, 0));
 		let ware = DatabaseWare::new_log_file_ware(LogFileDB::new(Atom::from("./testlogfile"), 1024 * 1024 * 1024).await);
 		let _ = mgr.register(Atom::from("logfile"), Arc::new(ware)).await;
 
-		let mut tr1 = mgr.transaction(true).await;
+		let mut tr1 = mgr.transaction(true, Some(rt.clone())).await;
 		let meta1 = TabMeta::new(sinfo::EnumType::Str, sinfo::EnumType::Str);
 		tr1.alter(&Atom::from("logfile"), &Atom::from("./testlogfile/hello"), Some(Arc::new(meta1.clone()))).await;
 		tr1.alter(&Atom::from("logfile"), &Atom::from("./testlogfile/hello_fork"), Some(Arc::new(meta1.clone()))).await;
@@ -156,7 +163,7 @@ fn test_load_data() {
 		tr1.prepare().await;
 		tr1.commit().await;
 
-		let mut tr2 = mgr.transaction(false).await;
+		let mut tr2 = mgr.transaction(false, Some(rt.clone())).await;
 		let mut iter = tr2.iter(&Atom::from("logfile"), &Atom::from("./testlogfile/hello_fork"), None, false, None).await.unwrap();
 		println!("hello_fork");
 		while let Some(Ok(Some(elem))) = iter.next() {
@@ -165,7 +172,7 @@ fn test_load_data() {
 		tr2.prepare().await;
 		tr2.commit().await;
 
-		let mut tr3 = mgr.transaction(true).await;
+		let mut tr3 = mgr.transaction(true, Some(rt.clone())).await;
 	
 		let mut k = WriteBuffer::new();
 		k.write_bin(b"hello7", 0..6);
@@ -183,13 +190,13 @@ fn test_load_data() {
 		tr3.prepare().await;
 		tr3.commit().await;
 
-		let mut tr4 = mgr.transaction(true).await;
+		let mut tr4 = mgr.transaction(true, Some(rt.clone())).await;
 		let tm = TabMeta::new(sinfo::EnumType::Str, sinfo::EnumType::Str);
 		tr4.fork_tab(Atom::from("logfile"), Atom::from("./testlogfile/hello_fork"), Atom::from("./testlogfile/hello_fork2"), tm).await;
 		tr4.prepare().await;
 		tr4.commit().await;
 
-		let mut tr5 = mgr.transaction(true).await;
+		let mut tr5 = mgr.transaction(true, Some(rt.clone())).await;
 		let mut k = WriteBuffer::new();
 		k.write_bin(b"hello8", 0..6);
 		let mut v = WriteBuffer::new();
@@ -206,7 +213,7 @@ fn test_load_data() {
 		tr5.prepare().await;
 		tr5.commit().await;
 
-		let mut tr6 = mgr.transaction(false).await;
+		let mut tr6 = mgr.transaction(false, Some(rt.clone())).await;
 		let mut iter = tr6.iter(&Atom::from("logfile"), &Atom::from("./testlogfile/hello_fork2"), None, false, None).await.unwrap();
 		println!("hello_fork2");
 		while let Some(Ok(Some(elem))) = iter.next() {
@@ -215,7 +222,7 @@ fn test_load_data() {
 		tr6.prepare().await;
 		tr6.commit().await;
 
-		let mut tr7 = mgr.transaction(false).await;
+		let mut tr7 = mgr.transaction(false, Some(rt.clone())).await;
 		let mut iter = tr7.iter(&Atom::from("logfile"), &Atom::from("./testlogfile/hello"), None, false, None).await.unwrap();
 		println!("hello");
 

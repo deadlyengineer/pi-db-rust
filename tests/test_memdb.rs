@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use pi_db::mgr::{ DatabaseWare, Mgr };
+use pi_db::{log_file_db::STORE_RUNTIME, mgr::{ DatabaseWare, Mgr }};
 use pi_db::memery_db::MemDB;
 use atom::Atom;
 use sinfo;
@@ -15,21 +15,23 @@ fn test_mem_db_iter() {
 	let rt: MultiTaskRuntime<()>  = pool.startup(true);
 	let mgr = Mgr::new(GuidGen::new(0, 0));
 	let ware = DatabaseWare::new_mem_ware(MemDB::new());
+	let rt1 = rt.clone();
 
-	let _ = rt.spawn(rt.alloc(), async move {
+	let _ = rt1.spawn(rt.alloc(), async move {
+		*STORE_RUNTIME.write().await = Some(rt.clone());
 		let _ = mgr.register(Atom::from("memory"), Arc::new(ware)).await;
-		let mut tr = mgr.transaction(true).await;
+		let mut tr = mgr.transaction(true, Some(rt.clone())).await;
 		let meta = TabMeta::new(sinfo::EnumType::Str, sinfo::EnumType::Str);
 		tr.alter(&Atom::from("memory"), &Atom::from("hello"), Some(Arc::new(meta))).await;
 
 		tr.prepare().await;
 		tr.commit().await;
 
-		let mut tr5 = mgr.transaction(true).await;
+		let mut tr5 = mgr.transaction(true, Some(rt.clone())).await;
 		let tab_info= mgr.tab_info(&Atom::from("memory"), &Atom::from("hello")).await;
 
 		let mgr2 = mgr.clone();
-		let mut tr2 = mgr.transaction(true).await;
+		let mut tr2 = mgr.transaction(true, Some(rt.clone())).await;
 		
 		let mut items = vec![];
 
@@ -51,7 +53,7 @@ fn test_mem_db_iter() {
 		tr2.prepare().await;
 		tr2.commit().await;
 
-		let mut tr3 = mgr.transaction(false).await;
+		let mut tr3 = mgr.transaction(false, Some(rt.clone())).await;
 		let size = tr3.tab_size(&Atom::from("memory"), &Atom::from("hello")).await;
 		println!("size = {:?}", size);
 		let mut iter = tr3.iter(&Atom::from("memory"), &Atom::from("hello"), None, false, None).await.unwrap();
@@ -70,12 +72,14 @@ fn test_mem_db_iter() {
 fn test_memory_db() {
 	let pool = MultiTaskPool::new("Store-Runtime".to_string(), 4, 1024 * 1024, 10, Some(10));
 	let rt: MultiTaskRuntime<()>  = pool.startup(true);
+	let rt1 = rt.clone();
 
-	let _ = rt.spawn(rt.alloc(), async move {
+	let _ = rt1.spawn(rt.alloc(), async move {
+		*STORE_RUNTIME.write().await = Some(rt.clone());
 		let mgr = Mgr::new(GuidGen::new(0, 0));
 		let ware = DatabaseWare::new_mem_ware(MemDB::new());
 		let _ = mgr.register(Atom::from("memory"), Arc::new(ware)).await;
-		let mut tr = mgr.transaction(true).await;
+		let mut tr = mgr.transaction(true, Some(rt.clone())).await;
 
 		let meta = TabMeta::new(sinfo::EnumType::Str, sinfo::EnumType::Str);
 		let meta1 = TabMeta::new(sinfo::EnumType::Str, sinfo::EnumType::Str);
@@ -102,14 +106,14 @@ fn test_memory_db() {
 			index: 0
 		};
 
-		let mut tr2 = mgr.transaction(true).await;
+		let mut tr2 = mgr.transaction(true, Some(rt.clone())).await;
 
 		let r = tr2.modify(vec![item1.clone()], None, false).await;
 		println!("modify result = {:?}", r);
 		let p = tr2.prepare().await;
 		tr2.commit().await;
 
-		let mut tr3 = mgr.transaction(false).await;
+		let mut tr3 = mgr.transaction(false, Some(rt.clone())).await;
 		item1.value = None;
 
 		let q = tr3.query(vec![item1], None, false).await;
@@ -117,7 +121,7 @@ fn test_memory_db() {
 		tr3.prepare().await;
 		tr3.commit().await;
 
-		let mut tr4 = mgr.transaction(false).await;
+		let mut tr4 = mgr.transaction(false, Some(rt.clone())).await;
 		let size = tr4.tab_size(&Atom::from("memory"), &Atom::from("hello")).await;
 		println!("tab size = {:?}", size);
 		{

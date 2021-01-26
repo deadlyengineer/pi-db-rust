@@ -14,7 +14,7 @@ use r#async::lock::mutex_lock::Mutex;
 use r#async::lock::rw_lock::RwLock;
 
 
-use crate::db::{SResult, Bin, RwLog, TabMeta, BuildDbType, DBResult};
+use crate::{db::{SResult, Bin, RwLog, TabMeta, BuildDbType, DBResult}, log_file_db::MemIter};
 use crate::memery_db::MemDB;
 use crate::memery_db::{ MTab, RefMemeryTxn };
 use crate::log_file_db::{LogFileTab, RefLogFileTxn};
@@ -157,12 +157,23 @@ impl Prepare{
 			match o_rwlog.get(key) {
 				Some(RwLog::Read) => match log_type {
 					RwLog::Read => return Ok(()),
-					_ => return Err(String::from("parpare conflicted rw"))
+					RwLog::Write(_) => {
+						debug!("expect read log type, found write log type");
+						return Err(String::from("prepare conflicted rw"));
+					}
+					RwLog::Meta(_) => {
+						debug!("expect read log type, found meta log type");
+						return Err(String::from("unexpected meta log type1"));
+					}
 				},
+				Some(RwLog::Write(_)) => {
+					debug!("previous write log exist, key = {:?}", key);
+					return Err(String::from("previous write log exist"));
+				},
+				Some(RwLog::Meta(_)) => {
+					return Err(String::from("unexpected meta log type2"));
+				}
 				None => return Ok(()),
-				Some(_e) => {
-					return Err(String::from("parpare conflicted rw2"))
-				},
 			}
 		}
 
@@ -281,7 +292,7 @@ impl Tabs {
 		// 先检查预提交的交易是否有冲突
 		for val in self.prepare.lock().await.values() {
 			if !val.meta_names.is_disjoint(&log.meta_names) {
-				return Err(String::from("meta parpare conflicting"))
+				return Err(String::from("meta prepare conflicting"))
 			}
 		}
 		// 然后检查数据表是否被修改
@@ -292,11 +303,11 @@ impl Tabs {
 				match self.map.read().await.get(name) {
 					Some(r1) => match log.old_map.get(name) {
 						Some(r2) if (r1 as *const TabInfo) == (r2 as *const TabInfo) => (),
-						_ => return Err(String::from("meta parpare conflicted"))
+						_ => return Err(String::from("meta prepare conflicted"))
 					}
 					_ => match log.old_map.get(name) {
 						None => (),
-						_ => return Err(String::from("meta parpare conflicted"))
+						_ => return Err(String::from("meta prepare conflicted"))
 					}
 				}
 			}

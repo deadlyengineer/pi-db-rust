@@ -238,11 +238,11 @@ impl FileMemTxn {
 				match self.tab.0.lock().await.root.get(&key) {
 					Some(r1) => match self.old.get(&key) {
 						Some(r2) if (r1 as *const Bin) == (r2 as *const Bin) => (),
-						_ => return Err(String::from("parpare conflicted value diff"))
+						_ => return Err(String::from("prepare conflicted value diff"))
 					},
 					_ => match self.old.get(&key) {
 						None => (),
-						_ => return Err(String::from("parpare conflicted old not None"))
+						_ => return Err(String::from("prepare conflicted old not None"))
 					}
 				}
 			}
