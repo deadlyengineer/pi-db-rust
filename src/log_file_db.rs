@@ -256,10 +256,11 @@ impl FileMemTxn {
 
 	// 内部提交方法
 	pub async fn commit_inner(&mut self) -> CommitResult {
-		let logs = self.tab.0.lock().await.prepare.remove(&self.id);
+		let mut lock = self.tab.0.lock().await;
+		let logs = lock.prepare.remove(&self.id);
 		let logs = match logs {
 			Some(rwlog) => {
-				let root_if_eq = self.tab.0.lock().await.root.ptr_eq(&self.old);
+				let root_if_eq = lock.root.ptr_eq(&self.old);
 				//判断根节点是否相等
 				if !root_if_eq {
 					for (k, rw_v) in rwlog.iter() {
@@ -269,10 +270,10 @@ impl FileMemTxn {
 								let k = Bon::new(k.clone());
 								match rw_v {
 									RwLog::Write(None) => {
-										self.tab.0.lock().await.root.delete(&k, false);
+										lock.root.delete(&k, false);
 									},
 									RwLog::Write(Some(v)) => {
-										self.tab.0.lock().await.root.upsert(k.clone(), v.clone(), false);
+										lock.root.upsert(k.clone(), v.clone(), false);
 									},
 									_ => (),
 								}
@@ -280,7 +281,7 @@ impl FileMemTxn {
 						}
 					}
 				} else {
-					self.tab.0.lock().await.root = self.root.clone();
+					lock.root = self.root.clone();
 				}
 				rwlog
 			}
@@ -814,7 +815,7 @@ impl AsyncLogFileStore {
 		for (key, value) in pairs {
 			id = self.log_file.append(LogMethod::PlainAppend, key, value);
 		}
-		
+
 		match self.log_file.delay_commit(id, false, 0).await {
 			Ok(_) => {
 				for (key, value) in pairs {
