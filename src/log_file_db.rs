@@ -815,11 +815,13 @@ impl AsyncLogFileStore {
 		for (key, value) in pairs {
 			id = self.log_file.append(LogMethod::PlainAppend, key, value);
 		}
-
-		match self.log_file.delay_commit(id, false, 0).await {
+		match self.log_file.delay_commit(id, false, 10).await {
 			Ok(_) => {
-				for (key, value) in pairs {
-					self.map.lock().insert(key.to_vec(), value.clone().into());
+				{
+					let mut map = self.map.lock();
+					for (key, value) in pairs {
+						map.insert(key.to_vec(), value.clone().into());
+					}
 				}
 				Ok(())
 			}
