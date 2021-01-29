@@ -29,6 +29,7 @@ use bon::{Decode, Encode, ReadBuffer, WriteBuffer};
 
 lazy_static! {
 	pub static ref STORE_RUNTIME: Arc<RwLock<Option<MultiTaskRuntime<()>>>> = Arc::new(RwLock::new(None));
+	static ref LOG_FILE_TABS: Arc<RwLock<XHashMap<Atom, LogFileTab>>> = Arc::new(RwLock::new(XHashMap::default()));
 }
 
 pub const DB_META_TAB_NAME: &'static str = "tabs_meta";
@@ -54,7 +55,7 @@ impl LogFileDB {
 		// 从元信息表加载所有表元信息
 		let db_path = env::var("DB_PATH").unwrap_or("./".to_string());
 		let mut path = PathBuf::new();
-		path.push(db_path);
+		path.push(db_path.clone());
 		path.push(DB_META_TAB_NAME);
 
 		let file = match AsyncLogFileStore::open(path, 8000, 200 * 1024 * 1024, None).await {
@@ -82,13 +83,38 @@ impl LogFileDB {
 			ALL_TABLES.lock().await.insert(tab_name, meta);
 		}
 
+		// 一次性加载所有表的数据
+		for (k, v) in map.iter() {
+			let tab_name = Atom::decode(&mut ReadBuffer::new(k, 0)).unwrap();
+			let path = db_path.clone() + "/" + tab_name.as_ref();
+			let file = match AsyncLogFileStore::open(path, 8000, 200 * 1024 * 1024, None).await {
+				Err(e) => {
+					panic!("!!!!!!open table = {:?} failed, e: {:?}", "tabs_meta", e);
+				},
+				Ok(store) => store
+			};
+	
+			let mut store = AsyncLogFileStore {
+				removed: Arc::new(SpinLock::new(XHashMap::default())),
+				map: Arc::new(SpinLock::new(BTreeMap::new())),
+				log_file: file.clone(),
+			};
+	
+			file.load(&mut store, None, false).await;
+			LOG_FILE_TABS.write().await.insert(tab_name.clone(), LogFileTab::new(&tab_name, &vec![]).await);
+		}
+
 		LogFileDB(Arc::new(tabs))
 	}
 
 	pub async fn open(tab: &Atom) -> SResult<LogFileTab> {
 		let chains = build_fork_chain(tab.clone()).await;
-		// println!("tab = {:?}, fork chains == {:?}", tab, chains);
-		Ok(LogFileTab::new(tab, &chains).await)
+		match LOG_FILE_TABS.read().await.get(tab) {
+			Some(t) => Ok(t.clone()),
+			None => {
+				Ok(LogFileTab::new(tab, &chains).await)
+			}
+		}
 	}
 
 	// 拷贝全部的表
@@ -815,11 +841,13 @@ impl AsyncLogFileStore {
 		for (key, value) in pairs {
 			id = self.log_file.append(LogMethod::PlainAppend, key, value);
 		}
-
-		match self.log_file.delay_commit(id, false, 0).await {
+		match self.log_file.delay_commit(id, false, 10).await {
 			Ok(_) => {
-				for (key, value) in pairs {
-					self.map.lock().insert(key.to_vec(), value.clone().into());
+				{
+					let mut map = self.map.lock();
+					for (key, value) in pairs {
+						map.insert(key.to_vec(), value.clone().into());
+					}
 				}
 				Ok(())
 			}

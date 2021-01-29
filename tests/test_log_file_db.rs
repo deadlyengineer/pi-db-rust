@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crossbeam_channel::bounded;
 use pi_db::{log_file_db::STORE_RUNTIME, mgr::{ DatabaseWare, Mgr }};
 use pi_db::log_file_db::LogFileDB;
 use atom::Atom;
@@ -223,4 +224,78 @@ fn read_test_data() {
 	});
 
 	std::thread::sleep(std::time::Duration::from_secs(200));
+}
+
+#[test]
+fn bench_log_file_write() {
+    let pool = MultiTaskPool::new("Store-Runtime".to_string(), 4, 1024 * 1024, 10, Some(10));
+    let rt: MultiTaskRuntime<()> = pool.startup(false);
+
+    let mgr = Mgr::new(GuidGen::new(0, 0));
+    let mgr_copy = mgr.clone();
+
+    let rt1 = rt.clone();
+    rt.spawn(rt.alloc(), async move {
+        if STORE_RUNTIME.read().await.is_none() {
+            *STORE_RUNTIME.write().await = Some(rt1.clone());
+        }
+
+        let ware = DatabaseWare::new_log_file_ware(
+            LogFileDB::new(Atom::from("./testlogfile"), 1024 * 1024 * 1024).await,
+        );
+        let _ = mgr_copy
+            .register(Atom::from("logfile"), Arc::new(ware))
+            .await;
+
+        let mut tr = mgr_copy.transaction(true, Some(rt1.clone())).await;
+
+        let meta = TabMeta::new(sinfo::EnumType::Str, sinfo::EnumType::Str);
+
+        tr.alter(
+            &Atom::from("logfile"),
+            &Atom::from("./testlogfile/hello"),
+            Some(Arc::new(meta)),
+        )
+        .await;
+        tr.prepare().await;
+        tr.commit().await;
+    });
+
+    std::thread::sleep(std::time::Duration::from_millis(5000));
+
+	let rt_copy = rt.clone();
+	
+	let rt_copy1 = rt_copy.clone();
+	let mgr_copy = mgr.clone();
+
+	let (s, r) = bounded(1);
+	let _ = rt.spawn(rt.alloc(), async move {
+		for index in 0..100000 {
+			log_file_write(&rt_copy1, &mgr_copy, index).await;
+		}
+		s.send(());
+	});
+	r.recv();
+}
+
+async fn log_file_write(rt: &MultiTaskRuntime<()>, mgr: &Mgr, index: usize) {
+    let mut tr = mgr.transaction(true, Some(rt.clone())).await;
+    let mut items = vec![];
+
+    let mut wb = WriteBuffer::new();
+    let string = "hello world".to_string() + index.to_string().as_str();
+    let key = string.as_bytes();
+    wb.write_bin(key, 0..key.len());
+
+    items.push(TabKV {
+        ware: Atom::from("logfile"),
+        tab: Atom::from("./testlogfile/hello"),
+        key: Arc::new(wb.bytes.clone()),
+        value: Some(Arc::new(wb.bytes)),
+        index: 0,
+    });
+
+    let _ = tr.modify(items, None, false).await;
+    let _ = tr.prepare().await;
+    let _ = tr.commit().await;
 }
