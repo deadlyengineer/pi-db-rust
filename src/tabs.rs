@@ -166,9 +166,20 @@ impl Prepare{
 						return Err(String::from("unexpected meta log type1"));
 					}
 				},
-				Some(RwLog::Write(_)) => {
-					debug!("previous write log exist, key = {:?}", key);
-					return Err(String::from("previous write log exist"));
+				Some(RwLog::Write(_)) => match log_type {
+					RwLog::Read => {
+						debug!("previous read log exist, key = {:?}", key);
+						return Err(String::from("previous read log exist"));
+					}
+					RwLog::Write(_) => {
+						debug!("previous write log exist, key = {:?}", key);
+						return Err(String::from("previous write log exist"));
+					}
+					RwLog::Meta(_) => {
+						debug!("previous meta log exist, key = {:?}", key);
+						return Err(String::from("previous meta log exist"));
+					}
+					
 				},
 				Some(RwLog::Meta(_)) => {
 					return Err(String::from("unexpected meta log type2"));
