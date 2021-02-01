@@ -80,27 +80,9 @@ impl LogFileDB {
 			let tab_name = Atom::decode(&mut ReadBuffer::new(k, 0)).unwrap();
 			let meta = TableMetaInfo::decode(&mut ReadBuffer::new(v.clone().to_vec().as_ref(), 0)).unwrap();
 			tabs.set_tab_meta(tab_name.clone(), Arc::new(meta.meta.clone())).await;
-			ALL_TABLES.lock().await.insert(tab_name, meta);
-		}
+			ALL_TABLES.lock().await.insert(tab_name.clone(), meta);
 
-		// 一次性加载所有表的数据
-		for (k, v) in map.iter() {
-			let tab_name = Atom::decode(&mut ReadBuffer::new(k, 0)).unwrap();
-			let path = db_path.clone() + "/" + tab_name.as_ref();
-			let file = match AsyncLogFileStore::open(path, 8000, 200 * 1024 * 1024, None).await {
-				Err(e) => {
-					panic!("!!!!!!open table = {:?} failed, e: {:?}", "tabs_meta", e);
-				},
-				Ok(store) => store
-			};
-	
-			let mut store = AsyncLogFileStore {
-				removed: Arc::new(SpinLock::new(XHashMap::default())),
-				map: Arc::new(SpinLock::new(BTreeMap::new())),
-				log_file: file.clone(),
-			};
-	
-			file.load(&mut store, None, false).await;
+			// 一次性加载所有表的数据
 			LOG_FILE_TABS.write().await.insert(tab_name.clone(), LogFileTab::new(&tab_name, &vec![]).await);
 		}
 
@@ -964,17 +946,16 @@ impl LogFileTab {
 			log_file: file.clone()
 		};
 
+		let start_time = Instant::now();
 		file.load(&mut store, Some(path), false).await;
-
 		let mut root= OrdMap::<Tree<Bon, Bin>>::new(None);
 		let mut load_size = 0;
-		let start_time = Instant::now();
 		let map = store.map.lock();
 		for (k, v) in map.iter() {
 			load_size += k.len() + v.len();
 			root.upsert(Bon::new(Arc::new(k.clone())), Arc::new(v.to_vec()), false);
 		}
-		debug!("====> load tab: {:?} size: {:?}byte time elapsed: {:?} <====", tab_name_clone, load_size, start_time.elapsed());
+		info!("load tab: {:?} size: {:?}byte time elapsed: {:?}", tab_name_clone, load_size, start_time.elapsed());
 
 		// 再加载分叉路径中的表的数据
 		for tm in chains.iter().skip(1) {
