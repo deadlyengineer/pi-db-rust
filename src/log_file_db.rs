@@ -76,15 +76,42 @@ impl LogFileDB {
 		let mut tabs = Tabs::new();
 
 		let map = store.map.lock();
+		let rt = STORE_RUNTIME.read().await.as_ref().unwrap().clone();
+		let mut async_map = rt.map();
+		let start = std::time::Instant::now();
+		let mut count = 0;
 		for (k, v) in map.iter() {
 			let tab_name = Atom::decode(&mut ReadBuffer::new(k, 0)).unwrap();
 			let meta = TableMetaInfo::decode(&mut ReadBuffer::new(v.clone().to_vec().as_ref(), 0)).unwrap();
 			tabs.set_tab_meta(tab_name.clone(), Arc::new(meta.meta.clone())).await;
 			ALL_TABLES.lock().await.insert(tab_name.clone(), meta);
 
-			// 一次性加载所有表的数据
-			LOG_FILE_TABS.write().await.insert(tab_name.clone(), LogFileTab::new(&tab_name, &vec![]).await);
+			async_map.join(AsyncRuntime::Multi(rt.clone()), async move {
+				Ok((tab_name.clone(), LogFileTab::new(&tab_name, &vec![]).await))
+			});
 		}
+
+		// 等待所有表加载完成
+		match async_map.map(AsyncRuntime::Multi(rt.clone())).await {
+			Ok(res) => {
+				for r in res {
+					count += 1;
+					match r {
+						Ok((tab_name, logfiletab)) => {
+							LOG_FILE_TABS.write().await.insert(tab_name, logfiletab);
+						}
+						Err(e) => {
+							panic!("load tab error {:?}", e);
+						}
+					}
+				}
+			}
+			Err(e) => {
+				panic!("load tab erorr: {:?}", e)
+			}
+		}
+
+		info!("total tabs: {:?}, time: {:?}", count, start.elapsed());
 
 		LogFileDB(Arc::new(tabs))
 	}
@@ -946,7 +973,6 @@ impl LogFileTab {
 			log_file: file.clone()
 		};
 
-		let start_time = Instant::now();
 		file.load(&mut store, Some(path), false).await;
 		let mut root= OrdMap::<Tree<Bon, Bin>>::new(None);
 		let mut load_size = 0;
@@ -955,7 +981,8 @@ impl LogFileTab {
 			load_size += k.len() + v.len();
 			root.upsert(Bon::new(Arc::new(k.clone())), Arc::new(v.to_vec()), false);
 		}
-		info!("load tab: {:?} size: {:?}byte time elapsed: {:?}", tab_name_clone, load_size, start_time.elapsed());
+
+		info!("load tab: {} {} KB", tab_name_clone.as_str(), format!("{0} {1:.2}", "size", load_size as f64 / 1024.0));
 
 		// 再加载分叉路径中的表的数据
 		for tm in chains.iter().skip(1) {
