@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
 use std::mem;
 use std::path::{Path, PathBuf};
 use std::fs;
@@ -30,6 +30,7 @@ use bon::{Decode, Encode, ReadBuffer, WriteBuffer};
 lazy_static! {
 	pub static ref STORE_RUNTIME: Arc<RwLock<Option<MultiTaskRuntime<()>>>> = Arc::new(RwLock::new(None));
 	static ref LOG_FILE_TABS: Arc<RwLock<XHashMap<Atom, LogFileTab>>> = Arc::new(RwLock::new(XHashMap::default()));
+	pub static ref LOG_FILE_TOTAL_SIZE: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
 }
 
 pub const DB_META_TAB_NAME: &'static str = "tabs_meta";
@@ -111,7 +112,7 @@ impl LogFileDB {
 			}
 		}
 
-		info!("total tabs: {:?}, time: {:?}", count, start.elapsed());
+		info!("total tabs: {:?}, time: {:?}, {} KB", count, start.elapsed(), format!("{0} {1:.2}", "total size", LOG_FILE_TOTAL_SIZE.load(Ordering::Relaxed) as f64 / 1024.0));
 
 		LogFileDB(Arc::new(tabs))
 	}
@@ -981,7 +982,7 @@ impl LogFileTab {
 			load_size += k.len() + v.len();
 			root.upsert(Bon::new(Arc::new(k.clone())), Arc::new(v.to_vec()), false);
 		}
-
+		LOG_FILE_TOTAL_SIZE.fetch_add(load_size as u64, Ordering::Relaxed);
 		info!("load tab: {} {} KB", tab_name_clone.as_str(), format!("{0} {1:.2}", "size", load_size as f64 / 1024.0));
 
 		// 再加载分叉路径中的表的数据
