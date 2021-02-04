@@ -16,7 +16,7 @@ use r#async::rt::multi_thread::{MultiTaskPool, MultiTaskRuntime};
 use r#async::rt::{AsyncRuntime, AsyncValue};
 use sinfo;
 
-use crossbeam_channel::{bounded, unbounded};
+use crossbeam_channel::bounded;
 use pi_db::log_file_db::STORE_RUNTIME;
 use std::time::Duration;
 
@@ -60,7 +60,7 @@ fn bench_log_file_iter_tab(b: &mut Bencher) {
 
 #[bench]
 fn bench_log_file_write(b: &mut Bencher) {
-    let pool = MultiTaskPool::new("Store-Runtime".to_string(), 8, 1024 * 1024, 10, Some(10));
+    let pool = MultiTaskPool::new("Store-Runtime".to_string(), 4, 1024 * 1024, 10, Some(10));
     let rt: MultiTaskRuntime<()> = pool.startup(false);
 
     let mgr = Mgr::new(GuidGen::new(0, 0));
@@ -107,19 +107,7 @@ fn bench_log_file_write(b: &mut Bencher) {
             }
             s.send(());
         });
-        loop {
-            if let Err(e) = r.recv_timeout(Duration::from_millis(10000)) {
-                println!(
-                    "!!!!!!recv timeout, wait_len: {}, len: {}, e: {:?}",
-                    rt_copy.wait_len(),
-                    rt_copy.len(),
-                    e
-                );
-                continue;
-            }
-
-            break;
-        }
+        r.recv();
     });
 }
 
@@ -172,19 +160,7 @@ fn bench_log_file_read(b: &mut Bencher) {
             }
             s.send(());
         });
-        loop {
-            if let Err(e) = r.recv_timeout(Duration::from_millis(10000)) {
-                println!(
-                    "!!!!!!recv timeout, wait_len: {}, len: {}, e: {:?}",
-                    rt_copy.wait_len(),
-                    rt_copy.len(),
-                    e
-                );
-                continue;
-            }
-
-            break;
-        }
+        r.recv();
     });
 }
 
