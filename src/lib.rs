@@ -12,3 +12,4 @@ pub mod tabs;
 pub mod memery_db;
 pub mod log_file_db;
 pub mod fork;
+pub mod db_collect;
