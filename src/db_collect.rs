@@ -27,6 +27,8 @@ pub fn collect_db(rt: MultiTaskRuntime<()>, start_at: usize) {
 	info!("start db collect task after {} ms", trigger_after);
 
 	let _ = rt.clone().spawn_timing(rt.clone().alloc(), async move {
+		LogFileDB::force_split().await;
+		info!("force split done");
 		if let Err(e) = LogFileDB::collect().await {
 			error!("db collect error: {:?}", e);
 		}
