@@ -84,39 +84,44 @@ impl LogFileDB {
 
 		let mut tabs = Tabs::new();
 
-		let map = store.map.lock();
+		let map = store.map.lock().clone();
 		let rt = STORE_RUNTIME.read().await.as_ref().unwrap().clone();
+		let mut count = 0;
 		let mut async_map = rt.map();
 		let start = std::time::Instant::now();
-		let mut count = 0;
 		for (k, v) in map.iter() {
 			let tab_name = Atom::decode(&mut ReadBuffer::new(k, 0)).unwrap();
 			let meta = TableMetaInfo::decode(&mut ReadBuffer::new(v.clone().to_vec().as_ref(), 0)).unwrap();
 			tabs.set_tab_meta(tab_name.clone(), Arc::new(meta.meta.clone())).await;
 			ALL_TABLES.lock().await.insert(tab_name.clone(), meta);
 
-			async_map.join(AsyncRuntime::Multi(rt.clone()), async move {
-				Ok((tab_name.clone(), LogFileTab::new(&tab_name, &vec![]).await))
-			});
-		}
 
-		// 等待所有表加载完成
-		match async_map.map(AsyncRuntime::Multi(rt.clone())).await {
-			Ok(res) => {
-				for r in res {
-					count += 1;
-					match r {
-						Ok((tab_name, logfiletab)) => {
-							LOG_FILE_TABS.write().await.insert(tab_name, logfiletab);
-						}
-						Err(e) => {
-							panic!("load tab error {:?}", e);
+			if count < 8 {
+				async_map.join(AsyncRuntime::Multi(rt.clone()), async move {
+					Ok((tab_name.clone(), LogFileTab::new(&tab_name, &vec![]).await))
+				});
+				count += 1;
+			} else {
+				match async_map.map(AsyncRuntime::Multi(rt.clone())).await {
+					Ok(res) => {
+						for r in res {
+							match r {
+								Ok((tab_name, logfiletab)) => {
+									LOG_FILE_TABS.write().await.insert(tab_name, logfiletab);
+								}
+								Err(e) => {
+									panic!("load tab error {:?}", e);
+								}
+							}
 						}
 					}
+					Err(e) => {
+						panic!("load tab erorr: {:?}", e)
+					}
 				}
-			}
-			Err(e) => {
-				panic!("load tab erorr: {:?}", e)
+
+				async_map = rt.map();
+				count = 0;
 			}
 		}
 
@@ -139,7 +144,7 @@ impl LogFileDB {
 	pub async fn collect() -> SResult<()> {
 		//获取LogFileDB的元信息
 		let meta = LogFileDB::open(&Atom::from(DB_META_TAB_NAME)).await.unwrap();
-		let map = meta.1.map.lock();
+		let map = meta.1.map.lock().clone();
 
 		//遍历LogFileDB中的所有LogFileTab
 		for (key, _) in map.iter() {
