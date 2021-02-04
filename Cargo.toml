@@ -25,6 +25,8 @@ futures = "0.3.4"
 pi_store = { path = "../pi_store"}
 hash = { path = "../pi_lib/hash" }
 num_cpus = "1.13.0"
+async_file = { path = "../pi_lib/async_file" }
 
 [dev-dependencies]
 crossbeam-channel = "0.4"
+env_logger = "0.8"

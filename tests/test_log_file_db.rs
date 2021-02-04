@@ -1,14 +1,241 @@
+use std::thread;
 use std::sync::Arc;
+use std::path::PathBuf;
+use std::time::Duration;
+use std::collections::{VecDeque, BTreeMap};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossbeam_channel::bounded;
 use pi_db::{log_file_db::STORE_RUNTIME, mgr::{ DatabaseWare, Mgr }};
-use pi_db::log_file_db::LogFileDB;
+use pi_db::log_file_db::{LOG_FILE_SIZE, AsyncLogFileStore, LogFileDB};
 use atom::Atom;
 use sinfo;
 use guid::GuidGen;
-use r#async::rt::multi_thread::{MultiTaskPool, MultiTaskRuntime};
+use r#async::{lock::spin_lock::SpinLock, rt::multi_thread::{MultiTaskPool, MultiTaskRuntime}};
 use pi_db::db::{TabKV, TabMeta};
 use bon::WriteBuffer;
+use hash::XHashMap;
+
+#[test]
+fn test_collect_log_file_db() {
+	//初始化日志服务器
+	env_logger::init();
+
+	let pool = MultiTaskPool::new("Store-Runtime".to_string(), 8, 1024 * 1024, 10, Some(10));
+	let rt: MultiTaskRuntime<()>  = pool.startup(false);
+
+	let rt_copy = rt.clone();
+	rt.spawn(rt.alloc(), async move {
+		*STORE_RUNTIME.write().await = Some(rt_copy.clone());
+		LOG_FILE_SIZE.store(1, Ordering::SeqCst);
+
+		let path = PathBuf::from("./tests/log");
+		let file = match AsyncLogFileStore::open(path.clone(), 8000, 200 * 1024 * 1024, None).await {
+			Err(e) => panic!("!!!!!!open table = {:?} failed, e: {:?}", path, e),
+			Ok(file) => file
+		};
+
+		let mut store = AsyncLogFileStore {
+			removed: Arc::new(SpinLock::new(XHashMap::default())),
+			map: Arc::new(SpinLock::new(BTreeMap::new())),
+			log_file: file.clone(),
+			tmp_map: Arc::new(SpinLock::new(XHashMap::default())),
+			writable_path: Arc::new(SpinLock::new(None)),
+			is_statistics: Arc::new(AtomicBool::new(false)),
+			is_init: Arc::new(AtomicBool::new(true)),
+			statistics: Arc::new(SpinLock::new(VecDeque::new())),
+		};
+
+		file.load(&mut store, Some(path.clone()), false).await;
+		store.is_init.store(false, Ordering::SeqCst);
+
+		let map_len = store.map.lock().len();
+		let writable_path = store.writable_path.lock().as_ref().cloned();
+		let is_statistics = store.is_statistics.load(Ordering::Relaxed);
+		println!("!!!!!!load ok, path: {:?}, map len: {}, writable_path: {:?}, is_statistics: {}", path, map_len, writable_path, is_statistics);
+
+		let mut log_total_len = 0;
+		for (log_file, log_len, key_len) in store.statistics.lock().iter() {
+			log_total_len += log_len;
+			println!("!!!!!!load ok, file: {:?}, log len: {}, key len: {}", log_file, log_len, key_len);
+		}
+		println!("!!!!!!load finish, log total len: {}", log_total_len);
+
+		println!("!!!!!!Init DB env");
+		let mgr = Mgr::new(GuidGen::new(0, 0));
+		let mgr_copy = mgr.clone();
+
+		let ware = DatabaseWare::new_log_file_ware(
+			LogFileDB::new(Atom::from("./tests/log"), 1024 * 1024 * 1024).await,
+		);
+		let _ = mgr_copy
+			.register(Atom::from("./tests"), Arc::new(ware))
+			.await;
+
+		let mut tr = mgr_copy.transaction(true, Some(rt_copy.clone())).await;
+
+		let meta = TabMeta::new(sinfo::EnumType::Str, sinfo::EnumType::Str);
+
+		tr.alter(
+			&Atom::from("./tests"),
+			&Atom::from("./tests/log"),
+			Some(Arc::new(meta)),
+		)
+			.await;
+		tr.prepare().await;
+		tr.commit().await;
+
+		println!("!!!!!!Init Tab");
+		let mut tr = mgr.transaction(true, Some(rt_copy.clone())).await;
+		for index in 0..100000 {
+			let mut items = vec![];
+
+			let mut wb = WriteBuffer::new();
+			let string = "Test".to_string() + index.to_string().as_str();
+			let key = string.as_bytes();
+			wb.write_bin(key, 0..key.len());
+
+			items.push(TabKV {
+				ware: Atom::from("./tests"),
+				tab: Atom::from("./tests/log"),
+				key: Arc::new(wb.bytes.clone()),
+				value: Some(Arc::new(wb.bytes)),
+				index: 0,
+			});
+
+			let _ = tr.modify(items, None, false).await;
+		}
+		let _ = tr.prepare().await;
+		let _ = tr.commit().await;
+
+		let mut tr = mgr.transaction(true, Some(rt_copy.clone())).await;
+		for index in 0..100000 {
+			let mut items = vec![];
+
+			let mut wb = WriteBuffer::new();
+			let string = "Test".to_string() + index.to_string().as_str();
+			let key = string.as_bytes();
+			wb.write_bin(key, 0..key.len());
+
+			items.push(TabKV {
+				ware: Atom::from("./tests"),
+				tab: Atom::from("./tests/log"),
+				key: Arc::new(wb.bytes.clone()),
+				value: None,
+				index: 0,
+			});
+
+			let _ = tr.modify(items, None, false).await;
+		}
+		let _ = tr.prepare().await;
+		let _ = tr.commit().await;
+
+		let mut tr = mgr.transaction(true, Some(rt_copy.clone())).await;
+		for index in 0..100000 {
+			let mut items = vec![];
+
+			let mut wb = WriteBuffer::new();
+			let string = "Test".to_string() + index.to_string().as_str();
+			let key = string.as_bytes();
+			wb.write_bin(key, 0..key.len());
+
+			items.push(TabKV {
+				ware: Atom::from("./tests"),
+				tab: Atom::from("./tests/log"),
+				key: Arc::new(wb.bytes.clone()),
+				value: Some(Arc::new(wb.bytes)),
+				index: 0,
+			});
+
+			let _ = tr.modify(items, None, false).await;
+		}
+		let _ = tr.prepare().await;
+		let _ = tr.commit().await;
+
+		let mut tr = mgr.transaction(true, Some(rt_copy.clone())).await;
+		for index in 100000..200000 {
+			let mut items = vec![];
+
+			let mut wb = WriteBuffer::new();
+			let string = "Test".to_string() + index.to_string().as_str();
+			let key = string.as_bytes();
+			wb.write_bin(key, 0..key.len());
+
+			items.push(TabKV {
+				ware: Atom::from("./tests"),
+				tab: Atom::from("./tests/log"),
+				key: Arc::new(wb.bytes.clone()),
+				value: Some(Arc::new(wb.bytes)),
+				index: 0,
+			});
+
+			let _ = tr.modify(items, None, false).await;
+		}
+		let _ = tr.prepare().await;
+		let _ = tr.commit().await;
+
+		let mut tr = mgr.transaction(true, Some(rt_copy.clone())).await;
+		for index in 0..100000 {
+			let mut items = vec![];
+
+			let mut wb = WriteBuffer::new();
+			let string = "Test".to_string() + index.to_string().as_str();
+			let key = string.as_bytes();
+			wb.write_bin(key, 0..key.len());
+
+			items.push(TabKV {
+				ware: Atom::from("./tests"),
+				tab: Atom::from("./tests/log"),
+				key: Arc::new(wb.bytes.clone()),
+				value: Some(Arc::new(wb.bytes)),
+				index: 0,
+			});
+
+			let _ = tr.modify(items, None, false).await;
+		}
+		let _ = tr.prepare().await;
+		let _ = tr.commit().await;
+
+		let mut tr = mgr.transaction(true, Some(rt_copy.clone())).await;
+		for index in 100000..200000 {
+			let mut items = vec![];
+
+			let mut wb = WriteBuffer::new();
+			let string = "Test".to_string() + index.to_string().as_str();
+			let key = string.as_bytes();
+			wb.write_bin(key, 0..key.len());
+
+			items.push(TabKV {
+				ware: Atom::from("./tests"),
+				tab: Atom::from("./tests/log"),
+				key: Arc::new(wb.bytes.clone()),
+				value: Some(Arc::new(wb.bytes)),
+				index: 0,
+			});
+
+			let _ = tr.modify(items, None, false).await;
+		}
+		let _ = tr.prepare().await;
+		let _ = tr.commit().await;
+		println!("!!!!!!Init Tab finish");
+
+		rt_copy.wait_timeout(5000).await;
+
+		println!("!!!!!!Test collect 0 start");
+		if let Err(e) = LogFileDB::collect().await {
+			panic!("Test collect failed, reason: {}", e);
+		}
+		println!("!!!!!!Test collect 0 finish");
+
+		println!("!!!!!!Test collect 1 start");
+		if let Err(e) = LogFileDB::collect().await {
+			panic!("Test collect failed, reason: {}", e);
+		}
+		println!("!!!!!!Test collect 1 finish");
+	});
+
+	thread::sleep(Duration::from_millis(100000000));
+}
 
 #[test]
 fn test_log_file_db() {
