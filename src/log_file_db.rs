@@ -1,4 +1,4 @@
-use std::sync::{Arc, atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering}};
+use std::sync::{Arc, atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering, spin_loop_hint}};
 use std::mem;
 use std::path::{Path, PathBuf};
 use std::fs;
@@ -86,45 +86,27 @@ impl LogFileDB {
 
 		let map = store.map.lock().clone();
 		let rt = STORE_RUNTIME.read().await.as_ref().unwrap().clone();
-		let mut count = 0;
-		let mut async_map = rt.map();
+		let count = Arc::new(AtomicUsize::new(map.len()));
 		let start = std::time::Instant::now();
+		let result = AsyncValue::new(AsyncRuntime::Multi(rt.clone()));
 		for (k, v) in map.iter() {
 			let tab_name = Atom::decode(&mut ReadBuffer::new(k, 0)).unwrap();
 			let meta = TableMetaInfo::decode(&mut ReadBuffer::new(v.clone().to_vec().as_ref(), 0)).unwrap();
 			tabs.set_tab_meta(tab_name.clone(), Arc::new(meta.meta.clone())).await;
 			ALL_TABLES.lock().await.insert(tab_name.clone(), meta);
 
-
-			if count < 8 {
-				async_map.join(AsyncRuntime::Multi(rt.clone()), async move {
-					Ok((tab_name.clone(), LogFileTab::new(&tab_name, &vec![]).await))
-				});
-				count += 1;
-			} else {
-				match async_map.map(AsyncRuntime::Multi(rt.clone())).await {
-					Ok(res) => {
-						for r in res {
-							match r {
-								Ok((tab_name, logfiletab)) => {
-									LOG_FILE_TABS.write().await.insert(tab_name, logfiletab);
-								}
-								Err(e) => {
-									panic!("load tab error {:?}", e);
-								}
-							}
-						}
-					}
-					Err(e) => {
-						panic!("load tab erorr: {:?}", e)
-					}
+			let count_copy = count.clone();
+			let result_copy = result.clone();
+			rt.spawn(rt.alloc(), async move {
+				let log_file_tab = LogFileTab::new(&tab_name, &vec![]).await;
+				LOG_FILE_TABS.write().await.insert(tab_name, log_file_tab);
+				if count_copy.fetch_sub(1, Ordering::Relaxed) == 1 {
+					result_copy.set(());
 				}
-
-				async_map = rt.map();
-				count = 0;
-			}
+			});
 		}
 
+		let _ = result.await;
 		info!("total tabs: {:?}, time: {:?}, {} KB", count, start.elapsed(), format!("{0} {1:.2}", "total size", LOG_FILE_TOTAL_SIZE.load(Ordering::Relaxed) as f64 / 1024.0));
 
 		LogFileDB(Arc::new(tabs))
