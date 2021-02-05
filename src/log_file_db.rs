@@ -135,6 +135,19 @@ impl LogFileDB {
 		}
 	}
 
+	pub async fn force_split() -> SResult<()> {
+		let meta = LogFileDB::open(&Atom::from(DB_META_TAB_NAME)).await.unwrap();
+		let map = meta.1.map.lock().clone();
+
+		for (key, _) in map.iter() {
+			let tab_name = Atom::decode(&mut ReadBuffer::new(key, 0)).unwrap();
+			let mut file = LogFileDB::open(&tab_name).await.unwrap();
+			file.1.log_file.split().await;
+		}
+
+		Ok(())
+	}
+
 	//异步整理所有LogFileTab
 	pub async fn collect() -> SResult<()> {
 		//获取LogFileDB的元信息
