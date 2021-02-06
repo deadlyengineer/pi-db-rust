@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, env, path::PathBuf, sync::Arc};
 use std::fs;
+use std::str::FromStr;
 
 use atom::Atom;
 use bon::{Decode, ReadBuffer};
@@ -8,22 +9,17 @@ use r#async::rt::multi_thread::{MultiTaskPool, MultiTaskRuntime};
 use r#async::rt::{AsyncRuntime, AsyncValue};
 use r#async::lock::spin_lock::SpinLock;
 use chrono::prelude::*;
+use cron::Schedule;
 
 use crate::log_file_db::{AsyncLogFileStore, DB_META_TAB_NAME, LogFileDB, LogFileTab};
 
 pub fn collect_db(rt: MultiTaskRuntime<()>, start_at: usize) {
 	let local: DateTime<Local> = Local::now();
-	let h = local.hour();
-	let m = local.minute() as isize;
-	let time = (start_at as isize) - (h as isize);
-	let after = if time > 0 {
-		time
-	} else {
-		time + 24
-	};
+	let expression = format!("0  0  {}  *  *  *  *", start_at);
+	let schedule = Schedule::from_str(&expression).unwrap();
 
-	let trigger_after = ((after * 60 - m) as usize * 60) * 1000;
-
+	let date = schedule.upcoming(Local).take(1).into_iter().nth(0).unwrap();
+	let trigger_after = date.signed_duration_since(local).num_milliseconds();
 	info!("start db collect task after {} ms", trigger_after);
 
 	let _ = rt.clone().spawn_timing(rt.clone().alloc(), async move {
@@ -32,6 +28,7 @@ pub fn collect_db(rt: MultiTaskRuntime<()>, start_at: usize) {
 		if let Err(e) = LogFileDB::collect().await {
 			error!("db collect error: {:?}", e);
 		}
+		info!("db collect done {}", Local::now());
 		collect_db(rt.clone(), start_at);
-	}, trigger_after);
+	}, trigger_after as usize);
 }
