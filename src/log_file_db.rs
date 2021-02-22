@@ -52,7 +52,7 @@ impl LogFileDB {
 	*/
 	pub async fn new(db_path: Atom, db_size: usize) -> Self {
 		if !Path::new(&db_path.to_string()).exists() {
-            let _ = fs::create_dir(db_path.to_string());
+			let _ = fs::create_dir(db_path.to_string());
 		}
 
 		// 从元信息表加载所有表元信息
@@ -684,11 +684,11 @@ impl RefLogFileTxn {
 
 			value_arr.push(
 				TabKV{
-				ware: tabkv.ware.clone(),
-				tab: tabkv.tab.clone(),
-				key: tabkv.key.clone(),
-				index: tabkv.index.clone(),
-				value: value,
+					ware: tabkv.ware.clone(),
+					tab: tabkv.tab.clone(),
+					key: tabkv.key.clone(),
+					index: tabkv.index.clone(),
+					value: value,
 				}
 			)
 		}
@@ -789,8 +789,8 @@ pub struct MemIter{
 
 impl Drop for MemIter{
 	fn drop(&mut self) {
-        unsafe{Box::from_raw(self.point as *mut <Tree<Bin, Bin> as OIter<'_>>::IterType)};
-    }
+		unsafe{Box::from_raw(self.point as *mut <Tree<Bin, Bin> as OIter<'_>>::IterType)};
+	}
 }
 
 impl MemIter{
@@ -827,8 +827,8 @@ pub struct MemKeyIter{
 
 impl Drop for MemKeyIter{
 	fn drop(&mut self) {
-        unsafe{Box::from_raw(self.point as *mut Keys<'_, Tree<Bin, Bin>>)};
-    }
+		unsafe{Box::from_raw(self.point as *mut Keys<'_, Tree<Bin, Bin>>)};
+	}
 }
 
 impl MemKeyIter{
@@ -982,7 +982,7 @@ unsafe impl Send for AsyncLogFileStore {}
 unsafe impl Sync for AsyncLogFileStore {}
 
 impl PairLoader for AsyncLogFileStore {
-    fn is_require(&self, log_file: Option<&PathBuf>, key: &Vec<u8>) -> bool {
+	fn is_require(&self, log_file: Option<&PathBuf>, key: &Vec<u8>) -> bool {
 		let b = !self.removed.lock().contains_key(key) && !self.tmp_map.lock().contains_key(key);
 
 		if self.is_statistics.load(Ordering::Relaxed) {
@@ -1045,9 +1045,9 @@ impl PairLoader for AsyncLogFileStore {
 		}
 
 		b
-    }
+	}
 
-    fn load(&mut self, log_file: Option<&PathBuf>, method: LogMethod, key: Vec<u8>, value: Option<Vec<u8>>) {
+	fn load(&mut self, log_file: Option<&PathBuf>, method: LogMethod, key: Vec<u8>, value: Option<Vec<u8>>) {
 		if self.is_statistics.load(Ordering::Relaxed) {
 			//需要统计
 			let mut init = false;
@@ -1088,15 +1088,15 @@ impl PairLoader for AsyncLogFileStore {
 		} else {
 			self.removed.lock().insert(key, ());
 		}
-    }
+	}
 }
 
 impl AsyncLogFileStore {
 	pub async fn open<P: AsRef<Path> + std::fmt::Debug>(path: P, buf_len: usize, file_len: usize, log_file_index: Option<usize>) -> Result<LogFile> {
 		// println!("AsyncLogFileStore open ====== {:?}, log_index = {:?}", path, log_file_index);
 		match LogFile::open(STORE_RUNTIME.read().await.as_ref().unwrap().clone(), path, buf_len, file_len, log_file_index).await {
-            Err(e) =>panic!("LogFile::open error {:?}", e),
-            Ok(file) => Ok(file),
+			Err(e) =>panic!("LogFile::open error {:?}", e),
+			Ok(file) => Ok(file),
 		}
 	}
 
@@ -1123,25 +1123,25 @@ impl AsyncLogFileStore {
 	}
 
 	pub async fn write(&self, key: Vec<u8>, value: Vec<u8>) -> Result<Option<Vec<u8>>> {
-        let id = self.log_file.append(LogMethod::PlainAppend, key.as_ref(), value.as_ref());
-        if let Err(e) = self.log_file.delay_commit(id, false, 0).await {
-            Err(e)
-        } else {
-            if let Some(value) = self.map.lock().insert(key, value.into()) {
-                //更新指定key的存储数据，则返回更新前的存储数据
-                Ok(Some(value.to_vec()))
-            } else {
-                Ok(None)
-            }
-        }
+		let id = self.log_file.append(LogMethod::PlainAppend, key.as_ref(), value.as_ref());
+		if let Err(e) = self.log_file.delay_commit(id, false, 0).await {
+			Err(e)
+		} else {
+			if let Some(value) = self.map.lock().insert(key, value.into()) {
+				//更新指定key的存储数据，则返回更新前的存储数据
+				Ok(Some(value.to_vec()))
+			} else {
+				Ok(None)
+			}
+		}
 	}
-	
-	pub fn read(&self, key: &[u8]) -> Option<Arc<[u8]>> {
-        if let Some(value) = self.map.lock().get(key) {
-            return Some(value.clone())
-        }
 
-        None
+	pub fn read(&self, key: &[u8]) -> Option<Arc<[u8]>> {
+		if let Some(value) = self.map.lock().get(key) {
+			return Some(value.clone())
+		}
+
+		None
 	}
 
 	pub async fn remove_batch(&self, keys: &[&[u8]]) -> Result<()> {
@@ -1162,24 +1162,24 @@ impl AsyncLogFileStore {
 	}
 
 	pub async fn remove(&self, key: Vec<u8>) -> Result<Option<Vec<u8>>> {
-        let id = self.log_file.append(LogMethod::Remove, key.as_ref(), &[]);
-        if let Err(e) = self.log_file.delay_commit(id, false, 0).await {
-            Err(e)
-        } else {
-            if let Some(value) = self.map.lock().remove(&key) {
-                Ok(Some(value.to_vec()))
-            } else {
-                Ok(None)
-            }
-        }
-    }
-
-    pub fn last_key(&self) -> Option<Vec<u8>> {
-        self.map.lock().iter().last().map(|(k, _)| {
-            k.clone()
-        })
+		let id = self.log_file.append(LogMethod::Remove, key.as_ref(), &[]);
+		if let Err(e) = self.log_file.delay_commit(id, false, 0).await {
+			Err(e)
+		} else {
+			if let Some(value) = self.map.lock().remove(&key) {
+				Ok(Some(value.to_vec()))
+			} else {
+				Ok(None)
+			}
+		}
 	}
-	
+
+	pub fn last_key(&self) -> Option<Vec<u8>> {
+		self.map.lock().iter().last().map(|(k, _)| {
+			k.clone()
+		})
+	}
+
 	/// 强制产生分裂
 	pub async fn force_fork(&self) -> Result<usize> {
 		self.log_file.split().await
@@ -1261,12 +1261,12 @@ impl LogFileTab {
 				is_init: Arc::new(AtomicBool::new(true)),
 				statistics: Arc::new(SpinLock::new(VecDeque::new())),
 			};
-	
+
 			let mut path = PathBuf::new();
 			path.push(tm.tab_name.clone().as_ref());
 			path.push(format!("{:0>width$}", log_file_id.unwrap()-1, width = 6));
 			file.load(&mut store, Some(path), 32 * 1024, true).await;
-	
+
 			let mut load_size = 0;
 			let start_time = Instant::now();
 			let map = store.map.lock();
