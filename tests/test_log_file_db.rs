@@ -46,20 +46,21 @@ fn test_collect_log_file_db() {
 			statistics: Arc::new(SpinLock::new(VecDeque::new())),
 		};
 
-		file.load(&mut store, Some(path.clone()), false).await;
+		println!("!!!!!!Load meta table start");
+		file.load(&mut store, Some(path.clone()), 32 * 1024, false).await;
 		store.is_init.store(false, Ordering::SeqCst);
 
 		let map_len = store.map.lock().len();
 		let writable_path = store.writable_path.lock().as_ref().cloned();
 		let is_statistics = store.is_statistics.load(Ordering::Relaxed);
-		println!("!!!!!!load ok, path: {:?}, map len: {}, writable_path: {:?}, is_statistics: {}", path, map_len, writable_path, is_statistics);
+		println!("!!!!!!Load ok, path: {:?}, map len: {}, writable_path: {:?}, is_statistics: {}", path, map_len, writable_path, is_statistics);
 
 		let mut log_total_len = 0;
 		for (log_file, log_len, key_len) in store.statistics.lock().iter() {
 			log_total_len += log_len;
-			println!("!!!!!!load ok, file: {:?}, log len: {}, key len: {}", log_file, log_len, key_len);
+			println!("!!!!!!Load ok, file: {:?}, log len: {}, key len: {}", log_file, log_len, key_len);
 		}
-		println!("!!!!!!load finish, log total len: {}", log_total_len);
+		println!("!!!!!!Load finish, log total len: {}", log_total_len);
 
 		println!("!!!!!!Init DB env");
 		let mgr = Mgr::new(GuidGen::new(0, 0));
@@ -220,6 +221,31 @@ fn test_collect_log_file_db() {
 		println!("!!!!!!Init Tab finish");
 
 		rt_copy.wait_timeout(5000).await;
+
+		let rt0 = rt_copy.clone();
+		rt_copy.spawn(rt_copy.alloc(), async move {
+			let mut tr = mgr.transaction(true, Some(rt0.clone())).await;
+			for index in 100000..200000 {
+				let mut items = vec![];
+
+				let mut wb = WriteBuffer::new();
+				let string = "Test".to_string() + index.to_string().as_str();
+				let key = string.as_bytes();
+				wb.write_bin(key, 0..key.len());
+
+				items.push(TabKV {
+					ware: Atom::from("./tests"),
+					tab: Atom::from("./tests/log"),
+					key: Arc::new(wb.bytes.clone()),
+					value: Some(Arc::new(wb.bytes)),
+					index: 0,
+				});
+
+				let _ = tr.modify(items, None, false).await;
+			}
+			let _ = tr.prepare().await;
+			let _ = tr.commit().await;
+		});
 
 		println!("!!!!!!Test collect 0 start");
 		if let Err(e) = LogFileDB::collect().await {

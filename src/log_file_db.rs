@@ -14,7 +14,7 @@ use guid::Guid;
 use hash::{XHashMap, XHashSet};
 use r#async::lock::mutex_lock::Mutex;
 use r#async::lock::rw_lock::RwLock;
-use pi_store::log_store::log_file::{read_log_paths, read_log_block, PairLoader, LogMethod, LogFile};
+use pi_store::log_store::log_file::{read_log_paths, read_log_file, read_log_file_block, PairLoader, LogMethod, LogFile};
 use r#async::rt::multi_thread::{MultiTaskPool, MultiTaskRuntime};
 use r#async::rt::{AsyncRuntime, AsyncValue};
 use r#async::lock::spin_lock::SpinLock;
@@ -79,7 +79,7 @@ impl LogFileDB {
 			statistics: Arc::new(SpinLock::new(VecDeque::new())),
 		};
 
-		file.load(&mut store, None, false).await;
+		file.load(&mut store, None, 32 * 1024, true).await;
 		store.is_init.store(false, Ordering::SeqCst);
 
 		let mut tabs = Tabs::new();
@@ -170,7 +170,7 @@ impl LogFileDB {
 			}
 
 			//整理需要整理的只读日志文件
-			if let Err(e) = file.1.log_file.collect_logs(remove_logs, collect_logs, 1024 * 1024, false).await {
+			if let Err(e) = file.1.log_file.collect_logs(remove_logs, collect_logs, 1024 * 1024, 32 * 1024, false).await {
 				//整理指定的LogFileTab失败，则立即退出整理
 				return Err(format!("Collect LogFileTab failed, tab: {}, reason: {:?}", tab_name.as_str(), e));
 			}
@@ -189,6 +189,7 @@ impl LogFileDB {
 			if let Ok(mut log_paths) = read_log_paths(&file.1.log_file).await {
 				//从大到小的分析整理后的日志文件，并更新LogFileTab的统计信息
 				let mut offset = None;
+				let mut read_len = 32 * 1024;
 				let rt = STORE_RUNTIME.read().await.as_ref().unwrap().clone();
 				while let Some(log_path) = log_paths.pop() {
 					let log_file = match AsyncFile::open(rt.clone(), log_path.clone(), AsyncFileOptions::OnlyRead).await {
@@ -203,39 +204,44 @@ impl LogFileDB {
 					};
 
 					loop {
-						let mut logs = LinkedList::default();
-						match read_log_block(&rt,
-											 &log_path,
-											 &log_file,
-											 offset,
-											 false).await {
+						match read_log_file(log_path.clone(),
+											log_file.clone(),
+											offset,
+											read_len).await {
 							Err(e) => {
 								error!("Statistic failed after collected, tab: {}, reason: {:?}", tab_name.as_str(), e);
 							},
-							Ok((next, list)) => {
-								if next == 0 {
-									//已读到日志文件头，则重置文件偏移
-									offset = None;
-								} else {
-									//更新日志文件位置，则返回当前日志文件的下一个日志块
-									offset = Some(next);
+							Ok((file_offset, bin)) => {
+								match read_log_file_block(log_path.clone(),
+														  &bin,
+														  file_offset,
+														  read_len,
+														  true) {
+									Err(e) => {
+										error!("Statistic failed after collected, tab: {}, reason: {:?}", tab_name.as_str(), e);
+									},
+									Ok((next_file_offset, next_len, logs)) => {
+										//分析当前只读日志文件的日志块，并更新当前只读日志文件的统计信息
+										for (method, key, value) in logs {
+											if file.1.is_require(Some(&log_path), &key) {
+												//需要分析的关键字
+												file.1.load(Some(&log_path), method, key, value);
+											}
+										}
+
+										if next_file_offset == 0 {
+											//已读到日志文件头，则继续下一个日志文件的读取
+											offset = None;
+											read_len = 3 * 1024;
+											break;
+										} else {
+											//更新日志文件位置
+											offset = Some(next_file_offset);
+											read_len = next_len;
+										}
+									},
 								}
-
-								logs = list;
 							},
-						}
-
-						//分析当前只读日志文件的日志块，并更新当前只读日志文件的统计信息
-						for (method, key, value) in logs {
-							if file.1.is_require(Some(&log_path), &key) {
-								//需要分析的关键字
-								file.1.load(Some(&log_path), method, key, value);
-							}
-						}
-
-						if offset.is_none() {
-							//继续下一个日志文件的读取
-							break;
 						}
 					}
 				}
@@ -1214,7 +1220,7 @@ impl LogFileTab {
 			statistics: Arc::new(SpinLock::new(VecDeque::new())),
 		};
 
-		file.load(&mut store, Some(path), false).await;
+		file.load(&mut store, Some(path), 32 * 1024, true).await;
 		let mut root= OrdMap::<Tree<Bon, Bin>>::new(None);
 		let mut load_size = 0;
 		let map = store.map.lock();
@@ -1246,7 +1252,7 @@ impl LogFileTab {
 			let mut path = PathBuf::new();
 			path.push(tm.tab_name.clone().as_ref());
 			path.push(format!("{:0>width$}", log_file_id.unwrap()-1, width = 6));
-			file.load(&mut store, Some(path), false).await;
+			file.load(&mut store, Some(path), 32 * 1024, true).await;
 	
 			let mut load_size = 0;
 			let start_time = Instant::now();

@@ -29,4 +29,5 @@ chrono = "0.4"
 async_file = { path = "../pi_lib/async_file" }
 
 [dev-dependencies]
+crossbeam-channel = "0.5"
 env_logger = "0.8"
