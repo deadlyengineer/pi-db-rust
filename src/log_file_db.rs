@@ -135,6 +135,19 @@ impl LogFileDB {
 		}
 	}
 
+	pub async fn force_split() -> SResult<()> {
+		let meta = LogFileDB::open(&Atom::from(DB_META_TAB_NAME)).await.unwrap();
+		let map = meta.1.map.lock().clone();
+
+		for (key, _) in map.iter() {
+			let tab_name = Atom::decode(&mut ReadBuffer::new(key, 0)).unwrap();
+			let mut file = LogFileDB::open(&tab_name).await.unwrap();
+			file.1.log_file.split().await;
+		}
+
+		Ok(())
+	}
+
 	//异步整理所有LogFileTab
 	pub async fn collect() -> SResult<()> {
 		//获取LogFileDB的元信息
@@ -159,7 +172,7 @@ impl LogFileDB {
 				}
 
 				let f = *log_len as f64 / *key_len as f64;
-				if f < 2.0 {
+				if f < 1.5 {
 					//当前只读日志文件的关键字重复率未达限制，则立即停止选择，并准备整理已选择的只读日志文件
 					break; //TODO 后续还要判断分叉的分裂点，除了分裂点为最大的只读日志文件外，其它分裂点将无法选择作为整理的只读日志文件，至到对应分裂点的分叉表被删除...
 				}
