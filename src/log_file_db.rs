@@ -1187,7 +1187,7 @@ impl AsyncLogFileStore {
 }
 
 #[derive(Clone)]
-pub struct LogFileTab(Arc<Mutex<MemeryTab>>, AsyncLogFileStore);
+pub struct LogFileTab(Arc<Mutex<MemeryTab>>, pub AsyncLogFileStore);
 
 unsafe impl Send for LogFileTab {}
 unsafe impl Sync for LogFileTab {}
