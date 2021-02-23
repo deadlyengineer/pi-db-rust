@@ -242,7 +242,7 @@ impl LogFileDB {
 											}
 										}
 
-										if next_file_offset == 0 {
+										if next_file_offset == 0 && next_len == 0 {
 											//已读到日志文件头，则继续下一个日志文件的读取
 											offset = None;
 											read_len = 3 * 1024;
