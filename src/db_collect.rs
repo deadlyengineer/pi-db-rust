@@ -23,12 +23,17 @@ pub fn collect_db(rt: MultiTaskRuntime<()>, start_at: usize) {
 	info!("start db collect task after {} ms", trigger_after);
 
 	let _ = rt.clone().spawn_timing(rt.clone().alloc(), async move {
-		LogFileDB::force_split().await;
-		info!("force split done");
-		if let Err(e) = LogFileDB::collect().await {
-			error!("db collect error: {:?}", e);
+		let start = Local::now();
+		LogFileDB::force_split().await; // 强制分裂
+		let meta = LogFileDB::open(&Atom::from(DB_META_TAB_NAME)).await.unwrap();
+		let map = meta.1.map.lock();
+		for (key, _) in map.iter() {
+			let tab_name = Atom::decode(&mut ReadBuffer::new(key, 0)).unwrap();
+			let mut file = LogFileDB::open(&tab_name).await.unwrap();
+			info!("collect tab {:?} ", tab_name);
+			file.1.log_file.collect(1024 * 1024, 32 * 1024, false).await;
 		}
-		info!("db collect done {}", Local::now());
+		info!("db collect done, start time =  {}, end time = {}", start, Local::now());
 		collect_db(rt.clone(), start_at);
 	}, trigger_after as usize);
 }
