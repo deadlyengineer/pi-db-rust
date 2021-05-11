@@ -242,6 +242,7 @@ fn test_delete() {
 	let pool = MultiTaskPool::new("Store-Runtime".to_string(), 4, 1024 * 1024, 10, Some(10));
 	let rt: MultiTaskRuntime<()>  = pool.startup(true);
 	let rt1 = rt.clone();
+	let rt2 = rt.clone();
 
 	let _ = rt1.spawn(rt.alloc(), async move {
 		*STORE_RUNTIME.write().await = Some(rt.clone());
@@ -285,6 +286,34 @@ fn test_delete() {
 		println!("res3 {:?}", res);
 
 		assert!(res.is_ok());
+	});
+
+	thread::sleep(Duration::from_secs(3));
+
+	let _ = rt1.spawn(rt2.clone().alloc(), async move {
+		*STORE_RUNTIME.write().await = Some(rt2.clone());
+
+		let mgr = Mgr::new(GuidGen::new(0, 0));
+		let ware = DatabaseWare::new_log_file_ware(LogFileDB::new(Atom::from("./testlogfile"), 1024 * 1024 * 1024).await);
+		let _ = mgr.register(Atom::from("logfile"), Arc::new(ware)).await;
+
+		let mut tr2 = mgr.transaction(false, Some(rt2.clone())).await;
+		let iter = tr2.iter(&Atom::from("logfile"), &Atom::from("./testlogfile/hello"), None, false, None).await;
+		println!("iter hello result error === {:?}", iter.is_err());
+		tr2.prepare().await;
+		tr2.commit().await;
+
+		let mut tr3 = mgr.transaction(false, Some(rt2.clone())).await;
+		let iter = tr3.iter(&Atom::from("logfile"), &Atom::from("./testlogfile/hello_fork"), None, false, None).await;
+		println!("iter hello_frok result error === {:?}", iter.is_err());
+		tr3.prepare().await;
+		tr3.commit().await;
+
+		let mut tr4 = mgr.transaction(false, Some(rt2.clone())).await;
+		let iter = tr4.iter(&Atom::from("logfile"), &Atom::from("./testlogfile/hello_fork2"), None, false, None).await;
+		println!("iter hello_fork2 result error === {:?}", iter.is_err());
+		tr4.prepare().await;
+		tr4.commit().await;
 	});
 
 	thread::sleep(Duration::from_secs(3));
