@@ -236,3 +236,56 @@ fn test_load_data() {
 
 	thread::sleep(Duration::from_secs(3));
 }
+
+#[test]
+fn test_delete() {
+	let pool = MultiTaskPool::new("Store-Runtime".to_string(), 4, 1024 * 1024, 10, Some(10));
+	let rt: MultiTaskRuntime<()>  = pool.startup(true);
+	let rt1 = rt.clone();
+
+	let _ = rt1.spawn(rt.alloc(), async move {
+		*STORE_RUNTIME.write().await = Some(rt.clone());
+
+		let mgr = Mgr::new(GuidGen::new(0, 0));
+		let ware = DatabaseWare::new_log_file_ware(LogFileDB::new(Atom::from("./testlogfile"), 1024 * 1024 * 1024).await);
+		let _ = mgr.register(Atom::from("logfile"), Arc::new(ware)).await;
+
+		let mut tr = mgr.transaction(true, Some(rt.clone())).await;
+
+		// 删除非叶子节点表
+		tr.alter(&Atom::from("logfile"), &Atom::from("./testlogfile/hello"), None).await;
+		let _ = tr.prepare().await;
+		let res = tr.commit().await;
+		println!("res {:?}", res);
+		assert!(res.is_err());
+
+		let mut tr2 = mgr.transaction(true, Some(rt.clone())).await;
+		// 删除叶子节点表
+		tr2.alter(&Atom::from("logfile"), &Atom::from("./testlogfile/hello_fork2"), None).await;
+		let p = tr2.prepare().await;
+		let res = tr2.commit().await;
+		println!("res1 {:?}", res);
+		assert!(res.is_ok());
+
+
+		// 删除叶子节点表
+		let mut tr3 = mgr.transaction(true, Some(rt.clone())).await;
+		tr3.alter(&Atom::from("logfile"), &Atom::from("./testlogfile/hello_fork"), None).await;
+		let p = tr3.prepare().await;
+		let res = tr3.commit().await;
+		println!("res2 {:?}", res);
+
+		assert!(res.is_ok());
+
+		// 删除根节点表
+		let mut tr4 = mgr.transaction(true, Some(rt.clone())).await;
+		tr4.alter(&Atom::from("logfile"), &Atom::from("./testlogfile/hello"), None).await;
+		let p = tr4.prepare().await;
+		let res = tr4.commit().await;
+		println!("res3 {:?}", res);
+
+		assert!(res.is_ok());
+	});
+
+	thread::sleep(Duration::from_secs(3));
+}
